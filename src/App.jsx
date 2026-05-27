@@ -673,7 +673,12 @@ function App() {
           </section>
           <section className="analytics-card">
             <SectionTitle icon={Activity} title="응력-변형률 그래프" />
-            <MiniChart values={[12, 24, 31, 42, simulation?.result.strainPercent ? 64 : 52, 78]} color="#00D1FF" />
+            <StressStrainChart
+              points={stressStrainPoints}
+              UTS={prediction.strengthMpa}
+              yieldStress={prediction.strengthMpa * 0.70}
+              elongation={prediction.elongationPercent ?? Math.max(5, 50 - prediction.strengthMpa / 40)}
+            />
           </section>
           <section className="analytics-card">
             <SectionTitle icon={Gauge} title="시뮬레이션 통계" />
@@ -807,6 +812,31 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
     return { x: 1, y: 1, z: 1 };
   }, [activeTest]);
 
+  const stressStrainPoints = useMemo(() => {
+    const UTS = prediction.strengthMpa;
+    const E = prediction.elasticityGpa * 1000;
+    const elongPct = prediction.elongationPercent ?? Math.max(5, 50 - UTS / 40);
+    const yieldStress = UTS * 0.70;
+    const yieldStrain = (yieldStress / E) * 100;
+    const totalStrain = Math.max(elongPct, yieldStrain * 2.5);
+    return Array.from({ length: 12 }, (_, i) => {
+      const strain = (i / 11) * totalStrain;
+      let stress;
+      if (strain <= yieldStrain) {
+        stress = (strain / yieldStrain) * yieldStress;
+      } else {
+        const pt = (strain - yieldStrain) / (totalStrain - yieldStrain);
+        if (pt < 0.78) {
+          stress = yieldStress + (UTS - yieldStress) * Math.pow(pt / 0.78, 0.52);
+        } else {
+          const nt = (pt - 0.78) / 0.22;
+          stress = UTS * (1 - 0.38 * nt);
+        }
+      }
+      return Math.max(0, Math.min(100, (stress / UTS) * 100));
+    });
+  }, [prediction.strengthMpa, prediction.elasticityGpa, prediction.elongationPercent]);
+
   const testRotZ = activeTest === "bending" ? 0.14 : 0;
   const maxDeform = Math.max(deform.x, deform.y);
   const stressRatio = fractureDeform > 1 ? Math.min(1, (maxDeform - 1) / (fractureDeform - 1)) : 0;
@@ -875,6 +905,7 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
           shape={shape}
           mode={mode}
           scale={sc}
+          testScale={testScale}
           interactMode={interactMode}
           orbitEnabledRef={orbitEnabledRef}
           onSelect={onSelect}
@@ -1147,55 +1178,82 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
   );
 }
 
-function FractureVisual({ geometry, matProps, fractureY, topRef, botRef }) {
-  const { gl } = useThree();
-  useEffect(() => { gl.localClippingEnabled = true; }, [gl]);
-  const clipTop = useMemo(() => [new THREE.Plane(new THREE.Vector3(0, 1, 0), -fractureY)], [fractureY]);
-  const clipBot = useMemo(() => [new THREE.Plane(new THREE.Vector3(0, -1, 0), fractureY)], [fractureY]);
-  return (
-    <>
-      <mesh ref={topRef} geometry={geometry} position={[0, 0.13, 0]}>
-        <meshStandardMaterial {...matProps} clippingPlanes={clipTop} />
-      </mesh>
-      <mesh ref={botRef} geometry={geometry} position={[0, -0.13, 0]}>
-        <meshStandardMaterial {...matProps} clippingPlanes={clipBot} />
-      </mesh>
-      <mesh position={[0, fractureY, 0]} rotation={[Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[3.2, 64]} />
-        <meshBasicMaterial color="#020000" transparent opacity={0.99} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
-      <mesh position={[0, fractureY, 0]} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.88, 1.18, 64]} />
-        <meshBasicMaterial color="#FF3300" transparent opacity={0.6} side={THREE.DoubleSide} />
-      </mesh>
-      <mesh position={[0, fractureY, 0]} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[1.18, 1.9, 64]} />
-        <meshBasicMaterial color="#FF2200" transparent opacity={0.12} side={THREE.DoubleSide} />
-      </mesh>
-      {Array.from({ length: 12 }).map((_, i) => {
-        const angle = (i / 12) * Math.PI * 2;
-        const r = 0.9 + (i % 4) * 0.1;
-        const yOff = ((i % 3) - 1) * 0.07;
-        return (
-          <mesh key={i} position={[Math.cos(angle) * r, fractureY + yOff, Math.sin(angle) * r]}>
-            <sphereGeometry args={[0.028, 5, 5]} />
-            <meshBasicMaterial color={i % 3 === 0 ? "#FFCC00" : i % 3 === 1 ? "#FF6600" : "#FF2200"} transparent opacity={0.92} />
-          </mesh>
+function buildTornGeometry(deformedArr, srcGeo, fractureY, keepAbove) {
+  const geo = srcGeo.clone();
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const ox = deformedArr[i * 3], oy = deformedArr[i * 3 + 1], oz = deformedArr[i * 3 + 2];
+    const isAbove = oy >= fractureY;
+    if (isAbove === keepAbove) {
+      pos.array[i * 3]     = ox;
+      pos.array[i * 3 + 1] = oy;
+      pos.array[i * 3 + 2] = oz;
+    } else {
+      const dist = Math.abs(oy - fractureY);
+      const fade = Math.exp(-dist * 1.8);
+      const noiseX = (Math.random() - 0.5) * 0.55 * fade;
+      const noiseZ = (Math.random() - 0.5) * 0.55 * fade;
+      const noiseY = Math.random() * 0.18 * fade;
+      pos.array[i * 3]     = ox + noiseX;
+      pos.array[i * 3 + 1] = fractureY + (keepAbove ? noiseY : -noiseY);
+      pos.array[i * 3 + 2] = oz + noiseZ;
+    }
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function DraggablePiece({ geometry, matProps, initOffset, camera, orbitEnabledRef, interactMode }) {
+  const ref = useRef();
+  function handlePointerDown(e) {
+    e.stopPropagation();
+    if (orbitEnabledRef) orbitEnabledRef.current = false;
+    const sx = e.clientX, sy = e.clientY;
+    const startPos = ref.current.position.clone();
+    const fwd = new THREE.Vector3();
+    camera.getWorldDirection(fwd);
+    const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+    const camUp = camera.up.clone().normalize();
+    function onMove(ev) {
+      const mdx = (ev.clientX - sx) * 0.008;
+      const mdy = -(ev.clientY - sy) * 0.008;
+      if (ref.current) {
+        ref.current.position.set(
+          startPos.x + right.x * mdx + camUp.x * mdy,
+          startPos.y + right.y * mdx + camUp.y * mdy,
+          startPos.z + right.z * mdx + camUp.z * mdy
         );
-      })}
-    </>
+      }
+    }
+    function onUp() {
+      if (orbitEnabledRef) orbitEnabledRef.current = interactMode === "orbit";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+  return (
+    <mesh
+      ref={ref}
+      geometry={geometry}
+      position={[0, initOffset, 0]}
+      onPointerDown={handlePointerDown}
+      onPointerEnter={() => { document.body.style.cursor = "grab"; }}
+      onPointerLeave={() => { document.body.style.cursor = ""; }}
+    >
+      <meshStandardMaterial {...matProps} side={THREE.DoubleSide} />
+    </mesh>
   );
 }
 
 const DEFORM_FRACTURE = 1.38;
 
-function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, onSelect, resetKey, matProps }) {
+function DeformableShape({ shape, mode, scale, testScale, interactMode, orbitEnabledRef, onSelect, resetKey, matProps }) {
   const meshRef = useRef();
-  const topMeshRef = useRef();
-  const botMeshRef = useRef();
   const grabsRef = useRef([]);
   const fractureRef = useRef(false);
-  const gapRef = useRef(0.13);
   const [fractureState, setFractureState] = useState(null);
   const { camera } = useThree();
 
@@ -1210,7 +1268,6 @@ function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, on
 
   function resetAll() {
     fractureRef.current = false;
-    gapRef.current = 0.13;
     grabsRef.current = [];
     setFractureState(null);
     document.body.style.cursor = "";
@@ -1222,28 +1279,20 @@ function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, on
   }
 
   useEffect(() => { resetAll(); }, [resetKey]);
-  useEffect(() => { if (interactMode !== "deform") resetAll(); }, [interactMode]);
-
-  useFrame(() => {
-    if (!fractureRef.current || gapRef.current >= 0.82) return;
-    gapRef.current = Math.min(0.82, gapRef.current + 0.009);
-    if (topMeshRef.current) topMeshRef.current.position.y = gapRef.current;
-    if (botMeshRef.current) botMeshRef.current.position.y = -gapRef.current;
-  });
 
   function applyDeform() {
     if (!meshRef.current || !grabsRef.current.length || fractureRef.current) return;
     const pos = meshRef.current.geometry.attributes.position;
     let maxDisp = 0;
+    let worstGrab = grabsRef.current[0];
+    let maxGrabMag = 0;
     for (let i = 0; i < pos.count; i++) {
       const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
       let dx = 0, dy = 0, dz = 0;
       for (const g of grabsRef.current) {
         const dSq = (bx - g.px) ** 2 + (by - g.py) ** 2 + (bz - g.pz) ** 2;
         const w = Math.exp(-dSq / (2 * sigma * sigma));
-        dx += g.dx * w;
-        dy += g.dy * w;
-        dz += g.dz * w;
+        dx += g.dx * w; dy += g.dy * w; dz += g.dz * w;
       }
       pos.array[i * 3]     = bx + dx;
       pos.array[i * 3 + 1] = by + dy;
@@ -1251,12 +1300,19 @@ function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, on
       const disp = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
       if (disp > maxDisp) maxDisp = disp;
     }
+    for (const g of grabsRef.current) {
+      const mag = Math.sqrt(g.dx ** 2 + g.dy ** 2 + g.dz ** 2);
+      if (mag > maxGrabMag) { maxGrabMag = mag; worstGrab = g; }
+    }
     pos.needsUpdate = true;
     meshRef.current.geometry.computeVertexNormals();
     if (maxDisp > DEFORM_FRACTURE) {
       fractureRef.current = true;
-      const g = grabsRef.current[grabsRef.current.length - 1];
-      setFractureState({ y: g.py * 0.4 });
+      const fy = worstGrab.py;
+      const snapshot = new Float32Array(pos.array);
+      const topGeo = buildTornGeometry(snapshot, geometry, fy, true);
+      const botGeo = buildTornGeometry(snapshot, geometry, fy, false);
+      setFractureState({ topGeo, botGeo });
     }
   }
 
@@ -1292,8 +1348,9 @@ function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, on
   }
 
   const sc = scale || 1;
+  const ts = testScale || { x: 1, y: 1, z: 1 };
   return (
-    <group scale={[sc, sc, sc]}>
+    <group scale={[ts.x * sc, ts.y * sc, ts.z * sc]}>
       <mesh
         ref={meshRef}
         geometry={geometry}
@@ -1305,13 +1362,10 @@ function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, on
         <meshStandardMaterial {...matProps} />
       </mesh>
       {fractureState && (
-        <FractureVisual
-          geometry={geometry}
-          matProps={matProps}
-          fractureY={fractureState.y}
-          topRef={topMeshRef}
-          botRef={botMeshRef}
-        />
+        <>
+          <DraggablePiece geometry={fractureState.topGeo} matProps={matProps} initOffset={0.07} camera={camera} orbitEnabledRef={orbitEnabledRef} interactMode={interactMode} />
+          <DraggablePiece geometry={fractureState.botGeo} matProps={matProps} initOffset={-0.07} camera={camera} orbitEnabledRef={orbitEnabledRef} interactMode={interactMode} />
+        </>
       )}
     </group>
   );
@@ -1408,6 +1462,36 @@ function MiniChart({ values, color }) {
       <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" />
       <polygon points={`0,100 ${points} 100,100`} fill={color} opacity="0.12" />
     </svg>
+  );
+}
+
+function StressStrainChart({ points, UTS, yieldStress, elongation }) {
+  const svgPoints = points.map((v, i) => `${(i / (points.length - 1)) * 96 + 2},${96 - v * 0.88}`).join(" ");
+  const yieldIdx = points.findIndex((v, i) => i > 0 && points[i] < points[i - 1]);
+  const utsIdx = points.indexOf(Math.max(...points));
+  const yieldX = yieldIdx > 0 ? (yieldIdx / (points.length - 1)) * 96 + 2 : null;
+  const utsX = (utsIdx / (points.length - 1)) * 96 + 2;
+  return (
+    <div style={{ position: "relative" }}>
+      <svg className="mini-chart" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ display: "block" }}>
+        <line x1="2" y1="8" x2="2" y2="96" stroke="#2a3a5a" strokeWidth="1" />
+        <line x1="2" y1="96" x2="98" y2="96" stroke="#2a3a5a" strokeWidth="1" />
+        {yieldX && (
+          <line x1={yieldX} y1="10" x2={yieldX} y2="96" stroke="#FFB020" strokeWidth="0.8" strokeDasharray="3,2" opacity="0.65" />
+        )}
+        <line x1={utsX} y1="10" x2={utsX} y2="96" stroke="#FF5A5A" strokeWidth="0.8" strokeDasharray="3,2" opacity="0.65" />
+        <polyline points={svgPoints} fill="none" stroke="#00D1FF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <polygon points={`2,96 ${svgPoints} 98,96`} fill="#00D1FF" opacity="0.10" />
+        {yieldX && <text x={yieldX + 1} y="14" fill="#FFB020" fontSize="6" opacity="0.85">항복</text>}
+        <text x={utsX + 1} y="14" fill="#FF5A5A" fontSize="6" opacity="0.85">UTS</text>
+      </svg>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "#7a8fa8" }}>
+        <span>0</span>
+        <span style={{ color: "#FFB020" }}>{yieldStress.toFixed(0)} MPa</span>
+        <span style={{ color: "#FF5A5A" }}>{UTS.toFixed(0)} MPa</span>
+        <span>{elongation.toFixed(1)}%</span>
+      </div>
+    </div>
   );
 }
 
