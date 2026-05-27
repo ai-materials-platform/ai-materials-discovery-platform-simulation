@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
@@ -287,7 +287,7 @@ function App() {
   const orbitEnabledRef = useRef(true);
   const [resetKey, setResetKey] = useState(0);
   const [simulation, setSimulation] = useState(null);
-  const [deformStats, setDeformStats] = useState({ maxStrain: 0, grabCount: 0 });
+  const [deformStats, setDeformStats] = useState({ maxStrain: 0, grabCount: 0, totalPull: 0 });
   const [logs, setLogs] = useState([
     { time: nowTime(), text: "조성 비율 기반 합금 모델 로드 완료" },
     { time: nowTime(), text: "Python 예측 백엔드 대기 중" }
@@ -602,7 +602,7 @@ function App() {
     setShape("sphere");
     setActiveTest("strength");
     setActiveMode("thermal");
-    setDeformStats({ maxStrain: 0, grabCount: 0 });
+    setDeformStats({ maxStrain: 0, grabCount: 0, totalPull: 0 });
     setResetKey((k) => k + 1);
     addLog("그림 초기화 완료");
   }
@@ -807,17 +807,52 @@ function App() {
                 testTemp={testTemp}
               />
             </Canvas>
+
+            <TestInfoHUD
+              activeTest={activeTest}
+              interactMode={interactMode}
+              prediction={prediction}
+              deformStats={deformStats}
+            />
+
             <div className="holo-label left">
-              <span>온도 분포</span>
-              <strong>{simulation?.result.temperatureC ?? Math.round(prediction.meltingPoint * 0.56)}°C</strong>
+              {activeTest === "bending" ? (
+                <>
+                  <span>최대 처짐</span>
+                  <strong>{((deformStats.totalPull ?? 0) * 100).toFixed(1)} mm</strong>
+                </>
+              ) : (
+                <>
+                  <span>온도 분포</span>
+                  <strong>{simulation?.result.temperatureC ?? Math.round(prediction.meltingPoint * 0.56)}°C</strong>
+                </>
+              )}
             </div>
             <div className="holo-label right">
-              <span>응력 최대치</span>
-              <strong>{simulation?.result.maxStressMpa ?? prediction.strengthMpa} MPa</strong>
+              {activeTest === "strength" ? (
+                <>
+                  <span>항복강도</span>
+                  <strong>{prediction.yieldStressMpa ?? prediction.strengthMpa} MPa</strong>
+                </>
+              ) : (
+                <>
+                  <span>응력 최대치</span>
+                  <strong>{simulation?.result.maxStressMpa ?? prediction.strengthMpa} MPa</strong>
+                </>
+              )}
             </div>
             <div className="holo-label bottom">
-              <span>변형률</span>
-              <strong>{simulation?.result.strainPercent ?? "3.2"}%</strong>
+              {activeTest === "bending" ? (
+                <>
+                  <span>굽힘 변형</span>
+                  <strong>{deformStats.maxStrain.toFixed(1)}%</strong>
+                </>
+              ) : (
+                <>
+                  <span>변형률</span>
+                  <strong>{(simulation?.result.strainPercent ?? (deformStats.maxStrain > 0 ? deformStats.maxStrain.toFixed(1) : "0.0"))}%</strong>
+                </>
+              )}
             </div>
             {shape === "specimen" && (
               <div style={{ position: "absolute", right: 14, bottom: 54, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 10px", background: "rgba(4,10,22,0.82)", border: "1px solid rgba(87,242,255,0.28)", borderRadius: 6, pointerEvents: "none" }}>
@@ -1117,6 +1152,9 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
         playhead={playhead}
         testTemp={testTemp}
         meltingPoint={prediction.meltingPoint}
+        onDeformStats={onDeformStats}
+        elasticityGpa={prediction.elasticityGpa}
+        strengthMpa={prediction.strengthMpa}
       />
     </group>
   );
@@ -1424,7 +1462,7 @@ function DraggablePiece({ geometry, matProps, initOffsetVec, offsetScale, camera
   );
 }
 
-function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMode, orbitEnabledRef, onSelect, resetKey, matProps, playing, playhead, testTemp, meltingPoint }) {
+function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMode, orbitEnabledRef, onSelect, resetKey, matProps, playing, playhead, testTemp, meltingPoint, onDeformStats, elasticityGpa, strengthMpa }) {
   const meshRef = useRef();
   const grabsRef = useRef([]);
   const fractureRef = useRef(false);
@@ -1522,20 +1560,22 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
         if (Math.abs(axialDisp) > maxDisp) maxDisp = Math.abs(axialDisp);
       }
     } else if (activeTest === "bending") {
-      // ASTM E290 3-point bending: sinusoidal profile along X, fixed ends, free Y and Z
+      // ASTM E290 3-point bending: parabolic deflection profile — max at x=0, pinned at x=±halfW
+      // w(x) = δ_max · (1 – (x/L)²)  — beam theory 포물선 근사
+      let totalPush = 0;
+      for (const g of pulls) totalPush += g.dy;
+      const halfW = Math.max(geoDims.halfW, 0.01);
+
       for (let i = 0; i < pos.count; i++) {
         const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
-        let dy = 0, dz = 0;
-        for (const g of pulls) {
-          const bendFactor = Math.cos((Math.PI / 2) * bx / geoDims.halfW);
-          dy += g.dy * bendFactor;
-          dz += g.dz * bendFactor;
-        }
+        const xr = bx / halfW;
+        // 포물선: 중앙에서 최대, 양 끝에서 0 (pinned)
+        const profile = Math.max(0.0, 1.0 - xr * xr);
+        const dy = totalPush * profile;
         pos.array[i * 3]     = bx;
         pos.array[i * 3 + 1] = by + dy;
-        pos.array[i * 3 + 2] = bz + dz;
-        const d = Math.sqrt(dy * dy + dz * dz);
-        if (d > maxDisp) maxDisp = d;
+        pos.array[i * 3 + 2] = bz;
+        if (Math.abs(dy) > maxDisp) maxDisp = Math.abs(dy);
       }
     } else if (activeTest === "elongation") {
       // Ductile elongation: free-form Gaussian + Poisson lateral contraction (ν≈0.30)
@@ -1619,6 +1659,11 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     if (!meshRef.current || !grabsRef.current.length || fractureRef.current) return;
     const maxDisp = computeVertexPositions(grabsRef.current);
     if (maxDisp > fractureThreshold) triggerFracture(grabsRef.current, maxDisp);
+    // 변형률 통계 보고 (구/박스 형상에서도 우측 패널 반영)
+    const totalPull = grabsRef.current.reduce((s, g) => s + Math.abs(g.dy), 0);
+    const ref = activeTest === "strength" || activeTest === "elongation" ? geoDims.halfH : geoDims.halfW;
+    const strainPct = (totalPull / Math.max(ref, 0.01)) * 100;
+    onDeformStats?.({ maxStrain: strainPct, grabCount: grabsRef.current.length, totalPull });
   }
 
   // Playback: replay recorded grabs scaled by playhead
@@ -1648,19 +1693,23 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     camera.getWorldDirection(fwd);
     const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
     const camUp = camera.up.clone().normalize();
-    const grab = { px: localPt.x, py: localPt.y, pz: localPt.z, dx: 0, dy: 0, dz: 0 };
+    // 휘어짐 테스트: 항상 중심점(0,0,0)에 하중 적용 (3점 굽힘 표준)
+    const grabPx = activeTest === "bending" ? 0 : localPt.x;
+    const grabPy = activeTest === "bending" ? 0 : localPt.y;
+    const grabPz = activeTest === "bending" ? 0 : localPt.z;
+    const grab = { px: grabPx, py: grabPy, pz: grabPz, dx: 0, dy: 0, dz: 0 };
     grabsRef.current.push(grab);
     function onMove(ev) {
       if (fractureRef.current) return;
       const mdx = (ev.clientX - sx) * 0.008;
       const mdy = -(ev.clientY - sy) * 0.008;
-      if (activeTest === "strength") {
-        // Strength: vertical drag only (pure axial tension/compression)
+      if (activeTest === "strength" || activeTest === "bending") {
+        // 강도·휘어짐: 수직 방향만 (축방향 인장 / 중심 하중)
         grab.dx = 0;
         grab.dy = mdy;
         grab.dz = 0;
       } else {
-        // Bending, elongation, default: full 3D free drag
+        // 늘어짐, 기본: 3D 자유 드래그
         grab.dx = right.x * mdx + camUp.x * mdy;
         grab.dy = right.y * mdx + camUp.y * mdy;
         grab.dz = right.z * mdx + camUp.z * mdy;
@@ -1723,6 +1772,16 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
             interactMode={interactMode}
           />
         </>
+      )}
+
+      {/* ── 3점 굽힘 테스트 시각 요소 ── */}
+      {activeTest === "bending" && !fractureState && (
+        <BendingFixtures geoDims={geoDims} interactMode={interactMode} />
+      )}
+
+      {/* ── 강도 테스트: 인장 클램프 시각 요소 ── */}
+      {activeTest === "strength" && !fractureState && (
+        <StrengthClamps geoDims={geoDims} interactMode={interactMode} />
       )}
     </group>
   );
@@ -1852,6 +1911,168 @@ function StressStrainChart({ points, UTS, yieldStress, elongation }) {
   );
 }
 
+const TEST_META = {
+  strength: {
+    title: "인장 강도 테스트 (ASTM E8)",
+    desc: "시편 양단을 클램프로 고정 후 인장력 적용. 항복점·UTS·파단 관찰.",
+    dragHint: "↕ 위로 드래그 → 인장 하중 증가",
+    crossSectionMm2: 78.5 // π × (5mm)² 기준 표준 시편
+  },
+  bending: {
+    title: "3점 굽힘 테스트 (ASTM E290)",
+    desc: "양단 지지대 위 시편 중앙에 펀치로 하중 인가. 최대 처짐·굽힘 모멘트 측정.",
+    dragHint: "↕ 중앙 클릭 후 아래로 드래그 → 굽힘 하중",
+    spanMm: 200 // 표준 지간(span) 200mm
+  },
+  elongation: {
+    title: "연신율 테스트 (ASTM E8 §8)",
+    desc: "파단 후 표점 거리 증가율 측정. 소성 변형 능력 및 인성 평가.",
+    dragHint: "자유 드래그 → 소성 변형 시뮬레이션",
+    gaugeLength: 50 // 표준 표점 거리 50mm
+  },
+  temperature: {
+    title: "고온 특성 테스트 (ASTM E21)",
+    desc: "슬라이더로 온도 설정 → 열팽창·용융 거동 시뮬레이션.",
+    dragHint: "슬라이더로 온도 조절",
+    note: "색상: 파랑(저온) → 주황 → 노랑(용융 근접)"
+  }
+};
+
+function TestInfoHUD({ activeTest, interactMode, prediction, deformStats }) {
+  const meta = TEST_META[activeTest] ?? TEST_META.strength;
+  const E = prediction.elasticityGpa ?? 200;
+  const UTS = prediction.utsMpa ?? prediction.strengthMpa ?? 800;
+  const yld = prediction.yieldStressMpa ?? UTS * 0.7;
+  const totalPull = deformStats.totalPull ?? 0;
+
+  let loadLine = "";
+  if (activeTest === "strength" && totalPull > 0.001) {
+    // ε = totalPull / halfH (local unit) → strain %는 deformStats.maxStrain
+    const eps = Math.min(deformStats.maxStrain / 100, 0.25);
+    const sigma = Math.min(UTS, E * 1000 * eps); // MPa
+    const F_kN = (sigma * meta.crossSectionMm2) / 1e3;
+    const F_kgf = F_kN * 101.97;
+    const state = sigma < yld ? "탄성 구간" : sigma < UTS * 0.95 ? "소성 변형" : "파단 임박";
+    loadLine = `적용 응력 ${sigma.toFixed(0)} MPa · 등가 하중 ${F_kN.toFixed(1)} kN (${F_kgf.toFixed(0)} kgf) · ${state}`;
+  } else if (activeTest === "bending" && totalPull > 0.001) {
+    // δ_mm ≈ totalPull × 100mm (1 local unit ≈ 100mm)
+    const delta = totalPull * 100;
+    // 3점 굽힘: P = 48EIδ/L³, I = bh³/12 (b=h=10mm 가정)
+    const L = meta.spanMm / 2; // 반지간
+    const I = (10 * 10 ** 3) / 12; // mm⁴
+    const P_N = (48 * E * 1000 * I * (delta / 1000)) / (L ** 3 * 2 ** 3); // N
+    const M_Nm = (P_N * meta.spanMm) / (4 * 1000); // Nm
+    loadLine = `최대 처짐 ${delta.toFixed(1)} mm · 등가 하중 ${(P_N / 1000).toFixed(2)} kN · 굽힘 모멘트 ${M_Nm.toFixed(1)} N·m`;
+  } else if (activeTest === "elongation" && totalPull > 0.001) {
+    const gl = meta.gaugeLength;
+    const elongMm = totalPull * 80;
+    const elongPct = (elongMm / gl) * 100;
+    loadLine = `표점 거리 기준 연신 ${elongMm.toFixed(1)} mm → 연신율 ${elongPct.toFixed(1)}%`;
+  }
+
+  return (
+    <div style={{
+      position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
+      background: "rgba(4,10,24,0.88)", border: "1px solid rgba(87,242,255,0.35)",
+      borderRadius: 8, padding: "8px 16px", pointerEvents: "none",
+      textAlign: "center", minWidth: 320, maxWidth: 520, zIndex: 10
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#57F2FF", marginBottom: 3 }}>{meta.title}</div>
+      <div style={{ fontSize: 10, color: "#a8b3c7", marginBottom: loadLine ? 4 : 0 }}>{meta.desc}</div>
+      {loadLine && <div style={{ fontSize: 11, color: "#FFB020", fontWeight: 600 }}>{loadLine}</div>}
+      {interactMode === "deform" && !loadLine && (
+        <div style={{ fontSize: 10, color: "#4488aa", fontStyle: "italic" }}>{meta.dragHint}</div>
+      )}
+    </div>
+  );
+}
+
+function BendingFixtures({ geoDims, interactMode }) {
+  const hw = geoDims.halfW;
+  const hh = geoDims.halfH;
+  const supY = -hh - 0.18;
+  const suppMat = { color: "#00D1FF", emissive: "#00D1FF", emissiveIntensity: 0.55, roughness: 0.2, metalness: 0.85 };
+  return (
+    <>
+      {/* 왼쪽 지지대 (삼각형 프리즘 근사: 좁은 위/넓은 아래 실린더) */}
+      <mesh position={[-hw, supY, 0]}>
+        <cylinderGeometry args={[0.04, 0.1, 0.22, 6]} />
+        <meshStandardMaterial {...suppMat} />
+      </mesh>
+      {/* 오른쪽 지지대 */}
+      <mesh position={[hw, supY, 0]}>
+        <cylinderGeometry args={[0.04, 0.1, 0.22, 6]} />
+        <meshStandardMaterial {...suppMat} />
+      </mesh>
+      {/* 지지대 베이스 플레이트 */}
+      <mesh position={[0, supY - 0.16, 0]}>
+        <boxGeometry args={[hw * 2.6, 0.06, 0.38]} />
+        <meshStandardMaterial color="#0A3050" roughness={0.5} metalness={0.7} />
+      </mesh>
+      {/* 중심 하중 펀치 (↓ 화살표) — 변형 모드일 때만 표시 */}
+      {interactMode === "deform" && (
+        <group position={[0, hh + 0.50, 0]}>
+          <mesh position={[0, 0.18, 0]}>
+            <cylinderGeometry args={[0.04, 0.04, 0.36, 8]} />
+            <meshStandardMaterial color="#FF5A5A" emissive="#FF5A5A" emissiveIntensity={0.8} />
+          </mesh>
+          {/* 화살촉 — 아래 방향 */}
+          <mesh rotation={[Math.PI, 0, 0]} position={[0, 0, 0]}>
+            <coneGeometry args={[0.10, 0.24, 8]} />
+            <meshStandardMaterial color="#FF5A5A" emissive="#FF5A5A" emissiveIntensity={0.8} />
+          </mesh>
+          {/* 상단 캡 */}
+          <mesh position={[0, 0.36, 0]}>
+            <boxGeometry args={[0.32, 0.08, 0.22]} />
+            <meshStandardMaterial color="#AA3030" roughness={0.3} metalness={0.8} />
+          </mesh>
+        </group>
+      )}
+    </>
+  );
+}
+
+function StrengthClamps({ geoDims, interactMode }) {
+  if (interactMode !== "deform") return null;
+  const hh = geoDims.halfH;
+  const hw = geoDims.halfW * 0.72;
+  const clampMat = { color: "#3DFFB5", emissive: "#3DFFB5", emissiveIntensity: 0.45, roughness: 0.2, metalness: 0.85 };
+  return (
+    <>
+      {/* 상단 클램프 — 위로 당기는 화살표 */}
+      <group position={[0, hh + 0.32, 0]}>
+        <mesh position={[0, 0.18, 0]}>
+          <cylinderGeometry args={[0.04, 0.04, 0.36, 8]} />
+          <meshStandardMaterial {...clampMat} />
+        </mesh>
+        <mesh position={[0, 0.36, 0]}>
+          <coneGeometry args={[0.10, 0.24, 8]} />
+          <meshStandardMaterial {...clampMat} />
+        </mesh>
+        <mesh>
+          <boxGeometry args={[hw * 2, 0.10, hw * 1.2]} />
+          <meshStandardMaterial color="#1A4A30" roughness={0.3} metalness={0.8} />
+        </mesh>
+      </group>
+      {/* 하단 클램프 — 아래로 당기는 화살표 */}
+      <group position={[0, -hh - 0.32, 0]}>
+        <mesh position={[0, -0.18, 0]}>
+          <cylinderGeometry args={[0.04, 0.04, 0.36, 8]} />
+          <meshStandardMaterial {...clampMat} />
+        </mesh>
+        <mesh position={[0, -0.36, 0]} rotation={[Math.PI, 0, 0]}>
+          <coneGeometry args={[0.10, 0.24, 8]} />
+          <meshStandardMaterial {...clampMat} />
+        </mesh>
+        <mesh>
+          <boxGeometry args={[hw * 2, 0.10, hw * 1.2]} />
+          <meshStandardMaterial color="#1A4A30" roughness={0.3} metalness={0.8} />
+        </mesh>
+      </group>
+    </>
+  );
+}
+
 function CompareTable({ alloys }) {
   const metrics = [
     { key: "strengthMpa", label: "UTS (MPa)" },
@@ -1936,3 +2157,4 @@ function ElementPicker({ existingElements, onAdd }) {
 }
 
 export default App;
+
