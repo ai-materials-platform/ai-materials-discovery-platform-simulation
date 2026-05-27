@@ -255,6 +255,31 @@ function App() {
   });
   const didInitialPrediction = useRef(false);
 
+  const stressStrainPoints = useMemo(() => {
+    const UTS = prediction.strengthMpa;
+    const E = prediction.elasticityGpa * 1000;
+    const elongPct = prediction.elongationPercent ?? Math.max(5, 50 - UTS / 40);
+    const yieldStress = UTS * 0.70;
+    const yieldStrain = (yieldStress / E) * 100;
+    const totalStrain = Math.max(elongPct, yieldStrain * 2.5);
+    return Array.from({ length: 12 }, (_, i) => {
+      const strain = (i / 11) * totalStrain;
+      let stress;
+      if (strain <= yieldStrain) {
+        stress = (strain / yieldStrain) * yieldStress;
+      } else {
+        const pt = (strain - yieldStrain) / (totalStrain - yieldStrain);
+        if (pt < 0.78) {
+          stress = yieldStress + (UTS - yieldStress) * Math.pow(pt / 0.78, 0.52);
+        } else {
+          const nt = (pt - 0.78) / 0.22;
+          stress = UTS * (1 - 0.38 * nt);
+        }
+      }
+      return Math.max(0, Math.min(100, (stress / UTS) * 100));
+    });
+  }, [prediction.strengthMpa, prediction.elasticityGpa, prediction.elongationPercent]);
+
   const selectedAlloy = alloys.find((alloy) => alloy.id === selectedId) ?? alloys[0];
 
   useEffect(() => {
@@ -811,31 +836,6 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
     if (activeTest === "temperature") return { x: 1.03, y: 1.03, z: 1.03 };
     return { x: 1, y: 1, z: 1 };
   }, [activeTest]);
-
-  const stressStrainPoints = useMemo(() => {
-    const UTS = prediction.strengthMpa;
-    const E = prediction.elasticityGpa * 1000;
-    const elongPct = prediction.elongationPercent ?? Math.max(5, 50 - UTS / 40);
-    const yieldStress = UTS * 0.70;
-    const yieldStrain = (yieldStress / E) * 100;
-    const totalStrain = Math.max(elongPct, yieldStrain * 2.5);
-    return Array.from({ length: 12 }, (_, i) => {
-      const strain = (i / 11) * totalStrain;
-      let stress;
-      if (strain <= yieldStrain) {
-        stress = (strain / yieldStrain) * yieldStress;
-      } else {
-        const pt = (strain - yieldStrain) / (totalStrain - yieldStrain);
-        if (pt < 0.78) {
-          stress = yieldStress + (UTS - yieldStress) * Math.pow(pt / 0.78, 0.52);
-        } else {
-          const nt = (pt - 0.78) / 0.22;
-          stress = UTS * (1 - 0.38 * nt);
-        }
-      }
-      return Math.max(0, Math.min(100, (stress / UTS) * 100));
-    });
-  }, [prediction.strengthMpa, prediction.elasticityGpa, prediction.elongationPercent]);
 
   const testRotZ = activeTest === "bending" ? 0.14 : 0;
   const maxDeform = Math.max(deform.x, deform.y);

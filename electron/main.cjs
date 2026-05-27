@@ -21,19 +21,46 @@ function createWindow() {
     height: 980,
     minWidth: 1200,
     minHeight: 760,
+    show: false,
     backgroundColor: "#0B1020",
     title: "AI 합금 디지털 트윈 시뮬레이션",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false
     }
   });
+
+  win.webContents.on("did-finish-load", () => {
+    console.log("[main] did-finish-load → showing window");
+    win.show();
+    win.focus();
+  });
+
+  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    console.error("[main] did-fail-load:", code, desc, url);
+    win.show();
+  });
+
+  win.webContents.on("render-process-gone", (_e, details) => {
+    console.error("[main] render-process-gone:", details.reason);
+  });
+
+  win.webContents.on("console-message", (_e, level, msg) => {
+    if (level >= 2) console.error("[renderer]", msg);
+  });
+
+  setTimeout(() => {
+    if (!win.isVisible()) { console.log("[main] fallback show"); win.show(); win.focus(); }
+  }, 5000);
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(rootDir, "dist", "index.html"));
+    const indexPath = path.join(rootDir, "dist", "index.html");
+    console.log("[main] loading:", indexPath);
+    win.loadFile(indexPath);
   }
 }
 
