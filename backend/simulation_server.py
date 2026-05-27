@@ -285,10 +285,25 @@ def predict_properties(raw_composition, density_scale, use_platform=True, proces
     melting_point = 1160 + 410 * strength_base - 95 * thermal_base
     prediction_confidence = min(98.0, 86.0 + mixing_entropy * 7.5)
 
+    # Yield stress: scales with UTS; high-strength alloys have higher yield/UTS ratio
+    yield_ratio = min(0.88, 0.60 + strength_base * 0.14)
+    yield_stress = strength * yield_ratio
+
+    # Elongation: inversely related to strength; ductile elements (Al, Mg, Cu) raise it
+    ductility_bonus = (composition.get("Al", 0) + composition.get("Mg", 0) + composition.get("Cu", 0)) * 9.0
+    elongation = max(2.5, min(58.0, 32.0 - strength_base * 20.0 + ductility_bonus + mixing_entropy * 4.5))
+
+    # Area reduction: correlated with elongation
+    area_reduction = max(8.0, min(82.0, elongation * 1.40 + 10.0))
+
     return {
         "composition": {element: round(ratio * 100, 2) for element, ratio in composition.items()},
         "density": round(density, 2),
         "strengthMpa": round(strength, 1),
+        "yieldStressMpa": round(yield_stress, 1),
+        "utsMpa": round(strength, 1),
+        "elongationPercent": round(elongation, 1),
+        "areaReductionPercent": round(area_reduction, 1),
         "elasticityGpa": round(elasticity, 1),
         "thermalConductivity": round(thermal_conductivity, 1),
         "meltingPoint": round(melting_point, 1),

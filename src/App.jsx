@@ -66,6 +66,10 @@ const DEFAULT_PREDICTION = {
   composition: { Ni: 42, Ti: 31, Cr: 27 },
   density: 7.42,
   strengthMpa: 1220.4,
+  yieldStressMpa: 830.0,
+  utsMpa: 1220.4,
+  elongationPercent: 14.2,
+  areaReductionPercent: 29.9,
   elasticityGpa: 144.8,
   thermalConductivity: 78.6,
   meltingPoint: 1487.2,
@@ -133,11 +137,19 @@ function fallbackPredict(composition, densityScale) {
   const cr = (composition.Cr || 0) / total;
   const ti = (composition.Ti || 0) / total;
   const al = (composition.Al || 0) / total;
+  const mg = (composition.Mg || 0) / total;
+  const cu = (composition.Cu || 0) / total;
   const strengthMpa = 820 + ni * 360 + cr * 420 + ti * 240 - al * 110;
+  const yieldStressMpa = strengthMpa * (0.62 + ni * 0.14 + cr * 0.10);
+  const elongation = Math.max(2.5, Math.min(58, 30 - (strengthMpa / 820 - 1) * 18 + (al + mg + cu) * 9));
   return {
     composition,
     density: Number((5.8 + densityScale * 2.2).toFixed(2)),
     strengthMpa: Number(strengthMpa.toFixed(1)),
+    yieldStressMpa: Number(Math.min(yieldStressMpa, strengthMpa * 0.92).toFixed(1)),
+    utsMpa: Number(strengthMpa.toFixed(1)),
+    elongationPercent: Number(elongation.toFixed(1)),
+    areaReductionPercent: Number(Math.max(8, Math.min(82, elongation * 1.4 + 10)).toFixed(1)),
     elasticityGpa: Number((122 + ti * 42 + cr * 18).toFixed(1)),
     thermalConductivity: Number((84 + al * 60 - cr * 18).toFixed(1)),
     meltingPoint: Number((1260 + cr * 260 + ni * 170).toFixed(1)),
@@ -224,6 +236,41 @@ function normalizeExternalPrediction(rawPayload) {
   };
 }
 
+function buildThermalChartValues(prediction, simulation) {
+  const peak = simulation?.result.temperatureC ?? Math.round(prediction.meltingPoint * 0.56);
+  const melt = prediction.meltingPoint || 1400;
+  const ambient = 22;
+  const stages = [ambient, ambient * 1.6, peak * 0.28, peak * 0.52, peak * 0.76, peak * 0.91, peak, peak * 0.85, peak * 0.62];
+  const max = Math.max(...stages);
+  return stages.map((v) => Math.max(2, Math.min(100, (v / max) * 100)));
+}
+
+function LoadingSpinner() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ animation: "spin 0.8s linear infinite", flexShrink: 0 }}>
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="10" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CompositionTotalBar({ total }) {
+  const pct = Math.min(total, 100);
+  const over = total > 105;
+  const under = total < 95;
+  const tone = over ? "var(--danger)" : under ? "var(--warning)" : "var(--success)";
+  return (
+    <div style={{ margin: "4px 0 8px", fontSize: 11 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3, color: tone }}>
+        <span>조성 합계</span>
+        <span style={{ fontWeight: 600 }}>{total.toFixed(1)}% {over ? "▲ 초과" : under ? "▼ 부족" : "✓ 정상"}</span>
+      </div>
+      <div style={{ height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: tone, borderRadius: 2, transition: "width 0.3s" }} />
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [alloys, setAlloys] = useState(() => PRESETS.map(createAlloyFromPreset));
   const [selectedId, setSelectedId] = useState(() => `${PRESETS[0].id}-0`);
@@ -245,7 +292,10 @@ function App() {
   const [search, setSearch] = useState("");
   const [compareMode, setCompareMode] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [playhead, setPlayhead] = useState(34);
+  const [playhead, setPlayhead] = useState(0);
+  const [testTemp, setTestTemp] = useState(20);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
   const [platformStatus, setPlatformStatus] = useState({ available: false, error: "확인 중" });
   const [predictionUrl, setPredictionUrl] = useState("");
   const [process, setProcess] = useState({
@@ -292,10 +342,17 @@ function App() {
   useEffect(() => {
     if (!playing) return;
     const timer = window.setInterval(() => {
-      setPlayhead((value) => (value >= 100 ? 0 : value + 1.2));
-    }, 120);
+      setPlayhead((value) => {
+        const next = value + 1.4;
+        return next >= 100 ? 100 : next;
+      });
+    }, 80);
     return () => window.clearInterval(timer);
   }, [playing]);
+
+  useEffect(() => {
+    if (playhead >= 100) setPlaying(false);
+  }, [playhead]);
 
   useEffect(() => {
     getBackendJson("/platform/status")
@@ -332,6 +389,7 @@ function App() {
   }
 
   async function predictAlloy(nextComposition = composition, nextDensity = densityScale) {
+    setIsPredicting(true);
     try {
       const result = await postBackend("/predict", {
         composition: nextComposition,
@@ -349,11 +407,20 @@ function App() {
       setPrediction(result);
       addLog("로컬 예측 모델로 물성값 계산 완료");
       return result;
+    } finally {
+      setIsPredicting(false);
     }
   }
 
   async function runSimulation(testId = activeTest) {
-    setActiveTest(testId);
+    if (testId !== activeTest) {
+      setActiveTest(testId);
+      setResetKey((k) => k + 1);
+      setPlayhead(0);
+      setPlaying(false);
+      if (testId !== "temperature") setTestTemp(20);
+    }
+    setIsSimulating(true);
     try {
       const result = await postBackend("/simulate", {
         composition,
@@ -364,28 +431,29 @@ function App() {
       });
       setSimulation(result);
       setPrediction(result.prediction);
-      setPlayhead(12);
-      setPlaying(true);
       addLog(`${result.testLabel} 실행: 응력 ${result.result.maxStressMpa} MPa, 변형률 ${result.result.strainPercent}%`);
     } catch {
       const predicted = await predictAlloy();
+      const safetyIdx = Math.max(4, 100 - (predicted.elongationPercent ?? 18) * 0.8 - (predicted.strengthMpa > 1200 ? 12 : 0));
       const result = {
         testType: testId,
         testLabel: TESTS.find((test) => test.id === testId)?.label ?? "물성 테스트",
         prediction: predicted,
         result: {
           maxStressMpa: predicted.strengthMpa,
-          strainPercent: 3.8,
-          temperatureC: 720,
-          deformationMm: 7.4,
-          safetyIndex: 82.2,
-          thermalGradient: 128,
-          failureRisk: "낮음"
+          strainPercent: Number(((predicted.elongationPercent ?? 18) * 0.22).toFixed(2)),
+          temperatureC: Math.round(predicted.meltingPoint * 0.56),
+          deformationMm: Number(((predicted.elongationPercent ?? 18) * 0.41).toFixed(2)),
+          safetyIndex: Number(safetyIdx.toFixed(1)),
+          thermalGradient: Math.round(predicted.meltingPoint * 0.56 * 0.18),
+          failureRisk: safetyIdx >= 78 ? "낮음" : safetyIdx >= 58 ? "주의" : "높음"
         },
         timelineEvents: []
       };
       setSimulation(result);
       addLog(`${result.testLabel} 로컬 시뮬레이션 완료`);
+    } finally {
+      setIsSimulating(false);
     }
   }
 
@@ -562,10 +630,14 @@ function App() {
                 onChange={(next) => updateComposition(element, next)}
               />
             ))}
+            <CompositionTotalBar total={compositionTotal} />
             <ControlSlider label={`밀도 계수 ${densityScale.toFixed(2)}`} min={0.1} max={1} step={0.01} value={densityScale} onChange={setDensityScale} />
             <ControlSlider label={`모델 스케일 ${(selectedAlloy?.scale ?? 1).toFixed(2)}x`} min={0.55} max={1.8} step={0.01} value={selectedAlloy?.scale ?? 1} onChange={updateScale} />
             <div className="composition-actions">
-              <button className="command primary" onClick={() => predictAlloy()}><WandSparkles size={15} />AI 예측 실행</button>
+              <button className="command primary" disabled={isPredicting} onClick={() => predictAlloy()}>
+                {isPredicting ? <LoadingSpinner /> : <WandSparkles size={15} />}
+                {isPredicting ? "예측 중..." : "AI 예측 실행"}
+              </button>
               <button className="command" onClick={loadState}><RotateCcw size={15} />상태 불러오기</button>
             </div>
           </section>
@@ -606,7 +678,6 @@ function App() {
               ["sphere", "구"],
               ["cube", "정육면체"],
               ["box", "직육면체"],
-              ["lattice", "원자 격자"],
               ["specimen", "시편"]
             ].map(([id, label]) => (
               <button key={id} className={shape === id ? "active" : ""} onClick={() => setShape(id)}>{label}</button>
@@ -641,6 +712,9 @@ function App() {
                 onSelectId={setSelectedId}
                 resetKey={resetKey}
                 onDeformStats={setDeformStats}
+                playing={playing}
+                playhead={playhead}
+                testTemp={testTemp}
               />
             </Canvas>
             <div className="holo-label left">
@@ -668,21 +742,37 @@ function App() {
           <div className="test-strip">
             {TESTS.map((test) => {
               const Icon = test.icon;
+              const running = isSimulating && activeTest === test.id;
               return (
-                <button key={test.id} className={`test-button ${activeTest === test.id ? "selected" : ""}`} onClick={() => runSimulation(test.id)}>
-                  <Icon size={17} />
+                <button key={test.id} className={`test-button ${activeTest === test.id ? "selected" : ""}`} disabled={isSimulating} onClick={() => runSimulation(test.id)}>
+                  {running ? <LoadingSpinner /> : <Icon size={17} />}
                   {test.label} 테스트
                 </button>
               );
             })}
           </div>
+          {activeTest === "temperature" && (
+            <div className="panel-section" style={{ padding: "8px 12px 4px" }}>
+              <ControlSlider
+                label={`테스트 온도 ${testTemp}°C (용융점 ${Math.round(prediction.meltingPoint)}°C)`}
+                min={20}
+                max={Math.round(prediction.meltingPoint)}
+                step={10}
+                value={testTemp}
+                onChange={setTestTemp}
+              />
+            </div>
+          )}
         </section>
 
         <aside className="right-panel panel">
           <PanelHeader title="AI 예측 결과" action={
             <div style={{ display: "flex", gap: "6px" }}>
               <button className="command" onClick={handleReset}><RotateCcw size={15} />초기화</button>
-              <button className="command" onClick={() => runSimulation(activeTest)}><Play size={15} />시뮬레이션 시작</button>
+              <button className="command primary" disabled={isSimulating || isPredicting} onClick={() => runSimulation(activeTest)}>
+                {isSimulating ? <LoadingSpinner /> : <Play size={15} />}
+                {isSimulating ? "실행 중..." : "시뮬레이션 시작"}
+              </button>
             </div>
           } />
           <div className="kpi-grid">
@@ -694,7 +784,7 @@ function App() {
 
           <section className="analytics-card">
             <SectionTitle icon={BarChart3} title="온도 분석" />
-            <MiniChart values={[22, 35, 54, 62, 74, simulation?.result.temperatureC ? 90 : 68]} color="#FFB020" />
+            <MiniChart values={buildThermalChartValues(prediction, simulation)} color="#FFB020" />
           </section>
           <section className="analytics-card">
             <SectionTitle icon={Activity} title="응력-변형률 그래프" />
@@ -746,7 +836,7 @@ function App() {
   );
 }
 
-function AlloyScene({ alloys, selectedId, mode, activeTest, prediction, simulation, shape, interactMode, orbitEnabledRef, onSelectId, resetKey, onDeformStats }) {
+function AlloyScene({ alloys, selectedId, mode, activeTest, prediction, simulation, shape, interactMode, orbitEnabledRef, onSelectId, resetKey, onDeformStats, playing, playhead, testTemp }) {
   return (
     <group>
       <CameraControls orbitEnabledRef={orbitEnabledRef} resetKey={resetKey} />
@@ -767,6 +857,9 @@ function AlloyScene({ alloys, selectedId, mode, activeTest, prediction, simulati
           onSelect={() => onSelectId(alloy.id)}
           resetKey={resetKey}
           onDeformStats={onDeformStats}
+          playing={playing}
+          playhead={playhead}
+          testTemp={testTemp}
         />
       ))}
     </group>
@@ -803,7 +896,7 @@ function CameraControls({ orbitEnabledRef, resetKey }) {
   return null;
 }
 
-function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation, offset, shape, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats }) {
+function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation, offset, shape, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats, playing, playhead, testTemp }) {
   const group = useRef();
   const [deform, setDeform] = useState({ x: 1, y: 1, z: 1 });
   const [fractured, setFractured] = useState(false);
@@ -843,12 +936,24 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
 
   const stressedColor = stressRatio > 0.75 ? "#FF5A5A" : stressRatio > 0.4 ? "#FFB020" : null;
   const modeColor = mode === "thermal" ? "#FFB020" : mode === "stress" ? "#FF5A5A" : mode === "xray" ? "#57F2FF" : alloy.color;
-  const color = activeTest === "temperature" ? "#FF8844" : stressedColor ?? modeColor;
-  const emissive = selected ? color : "#0B1020";
+  const tempColor = useMemo(() => {
+    if (activeTest !== "temperature") return null;
+    const t = Math.max(0, Math.min(1, (testTemp - 20) / Math.max(1, prediction.meltingPoint - 20)));
+    if (t < 0.25) return alloy.color;
+    if (t < 0.50) return "#FF7700";
+    if (t < 0.75) return "#FF3300";
+    if (t < 0.92) return "#FF8800";
+    return "#FFDD44";
+  }, [activeTest, testTemp, prediction.meltingPoint, alloy.color]);
+  const color = tempColor ?? stressedColor ?? modeColor;
+  const tempEmissiveIntensity = activeTest === "temperature"
+    ? 0.18 + Math.max(0, Math.min(1, (testTemp - 20) / Math.max(1, prediction.meltingPoint - 20))) * 0.6
+    : 0.24;
+  const emissive = selected ? color : (activeTest === "temperature" ? color : "#0B1020");
   const opacity = mode === "xray" ? 0.38 : 0.82;
   const matProps = {
     color, emissive,
-    emissiveIntensity: selected ? 0.65 : (activeTest === "temperature" ? 0.48 : 0.24),
+    emissiveIntensity: selected ? 0.65 : tempEmissiveIntensity,
     transparent: true, opacity,
     roughness: 0.28, metalness: 0.68,
     wireframe: mode === "wireframe"
@@ -898,69 +1003,24 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
     );
   }
 
-  if (interactMode === "deform" && shape !== "lattice") {
-    return (
-      <group position={[offset, 0.1, 0]}>
-        <DeformableShape
-          shape={shape}
-          mode={mode}
-          scale={sc}
-          testScale={testScale}
-          interactMode={interactMode}
-          orbitEnabledRef={orbitEnabledRef}
-          onSelect={onSelect}
-          resetKey={resetKey}
-          matProps={matProps}
-        />
-      </group>
-    );
-  }
-
-  const tx = testScale.x * deform.x * sc;
-  const ty = testScale.y * deform.y * sc;
-  const tz = testScale.z * deform.z * sc;
-  const gap = Math.max(0, maxDeform - fractureDeform) * 1.6 + (fractured ? 0.28 : 0);
-
-  if (fractured) {
-    return (
-      <group position={[offset, 0.1, 0]} rotation={[0, 0, testRotZ]}>
-        <FracturedMesh shape={shape} sx={tx} sy={ty} sz={tz} matProps={matProps} gap={gap} mode={mode} />
-        <FractureGlow />
-      </group>
-    );
-  }
-
   return (
-    <group ref={group} position={[offset, 0.1, 0]} rotation={[0, 0, testRotZ]}>
-      {shape === "lattice" ? (
-        <group scale={[tx, ty, tz]} onPointerDown={handlePointerDown}>
-          {points.map(([x, y, z]) => (
-            <mesh key={`${x}-${y}-${z}`} position={[x, y, z]}>
-              <sphereGeometry args={[0.085, 18, 18]} />
-              <meshStandardMaterial {...matProps} />
-            </mesh>
-          ))}
-          <mesh>
-            <boxGeometry args={[1.95, 1.95, 1.95]} />
-            <meshStandardMaterial color="#57F2FF" transparent opacity={mode === "xray" ? 0.12 : 0.045} wireframe={mode === "wireframe"} />
-          </mesh>
-        </group>
-      ) : shape === "sphere" ? (
-        <mesh scale={[tx, ty, tz]} onPointerDown={handlePointerDown}>
-          <sphereGeometry args={[1.05, 64, 64]} />
-          <meshStandardMaterial {...matProps} />
-        </mesh>
-      ) : shape === "cube" ? (
-        <mesh scale={[tx, ty, tz]} onPointerDown={handlePointerDown}>
-          <boxGeometry args={[1.8, 1.8, 1.8]} />
-          <meshStandardMaterial {...matProps} />
-        </mesh>
-      ) : (
-        <mesh scale={[tx, ty, tz]} onPointerDown={handlePointerDown}>
-          <boxGeometry args={[2.4, 1.2, 1.6]} />
-          <meshStandardMaterial {...matProps} />
-        </mesh>
-      )}
+    <group position={[offset, 0.1, 0]}>
+      <DeformableShape
+        shape={shape}
+        mode={mode}
+        scale={sc}
+        testScale={testScale}
+        activeTest={activeTest}
+        interactMode={interactMode}
+        orbitEnabledRef={orbitEnabledRef}
+        onSelect={onSelect}
+        resetKey={resetKey}
+        matProps={matProps}
+        playing={playing}
+        playhead={playhead}
+        testTemp={testTemp}
+        meltingPoint={prediction.meltingPoint}
+      />
     </group>
   );
 }
@@ -1178,25 +1238,40 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
   );
 }
 
-function buildTornGeometry(deformedArr, srcGeo, fractureY, keepAbove) {
+function buildTornGeometry(deformedArr, srcGeo, grabPt, pullNormal, keepOnPullSide) {
   const geo = srcGeo.clone();
   const pos = geo.attributes.position;
+  // Build perpendicular tangent basis for tear noise
+  let ax = 0, ay = 1, az = 0;
+  if (Math.abs(pullNormal.y) > 0.9) { ax = 1; ay = 0; az = 0; }
+  let t1x = ay * pullNormal.z - az * pullNormal.y;
+  let t1y = az * pullNormal.x - ax * pullNormal.z;
+  let t1z = ax * pullNormal.y - ay * pullNormal.x;
+  const t1len = Math.sqrt(t1x * t1x + t1y * t1y + t1z * t1z);
+  if (t1len > 0.001) { t1x /= t1len; t1y /= t1len; t1z /= t1len; }
+  const t2x = pullNormal.y * t1z - pullNormal.z * t1y;
+  const t2y = pullNormal.z * t1x - pullNormal.x * t1z;
+  const t2z = pullNormal.x * t1y - pullNormal.y * t1x;
+
   for (let i = 0; i < pos.count; i++) {
     const ox = deformedArr[i * 3], oy = deformedArr[i * 3 + 1], oz = deformedArr[i * 3 + 2];
-    const isAbove = oy >= fractureY;
-    if (isAbove === keepAbove) {
+    // Signed distance from fracture plane (positive = on pull side)
+    const dot = (ox - grabPt.x) * pullNormal.x + (oy - grabPt.y) * pullNormal.y + (oz - grabPt.z) * pullNormal.z;
+    const onPullSide = dot >= 0;
+    if (onPullSide === keepOnPullSide) {
       pos.array[i * 3]     = ox;
       pos.array[i * 3 + 1] = oy;
       pos.array[i * 3 + 2] = oz;
     } else {
-      const dist = Math.abs(oy - fractureY);
+      const dist = Math.abs(dot);
       const fade = Math.exp(-dist * 1.8);
-      const noiseX = (Math.random() - 0.5) * 0.55 * fade;
-      const noiseZ = (Math.random() - 0.5) * 0.55 * fade;
-      const noiseY = Math.random() * 0.18 * fade;
-      pos.array[i * 3]     = ox + noiseX;
-      pos.array[i * 3 + 1] = fractureY + (keepAbove ? noiseY : -noiseY);
-      pos.array[i * 3 + 2] = oz + noiseZ;
+      const noiseAlong = (keepOnPullSide ? 1 : -1) * Math.random() * 0.18 * fade;
+      const noiseP1 = (Math.random() - 0.5) * 0.55 * fade;
+      const noiseP2 = (Math.random() - 0.5) * 0.55 * fade;
+      // Project vertex to fracture plane, then add directional noise
+      pos.array[i * 3]     = (ox - dot * pullNormal.x) + noiseAlong * pullNormal.x + noiseP1 * t1x + noiseP2 * t2x;
+      pos.array[i * 3 + 1] = (oy - dot * pullNormal.y) + noiseAlong * pullNormal.y + noiseP1 * t1y + noiseP2 * t2y;
+      pos.array[i * 3 + 2] = (oz - dot * pullNormal.z) + noiseAlong * pullNormal.z + noiseP1 * t1z + noiseP2 * t2z;
     }
   }
   pos.needsUpdate = true;
@@ -1204,8 +1279,12 @@ function buildTornGeometry(deformedArr, srcGeo, fractureY, keepAbove) {
   return geo;
 }
 
-function DraggablePiece({ geometry, matProps, initOffset, camera, orbitEnabledRef, interactMode }) {
+function DraggablePiece({ geometry, matProps, initOffsetVec, offsetScale, camera, orbitEnabledRef, interactMode }) {
   const ref = useRef();
+  const s = offsetScale ?? 0.07;
+  const initPos = initOffsetVec
+    ? [initOffsetVec.x * s, initOffsetVec.y * s, initOffsetVec.z * s]
+    : [0, s, 0];
   function handlePointerDown(e) {
     e.stopPropagation();
     if (orbitEnabledRef) orbitEnabledRef.current = false;
@@ -1238,7 +1317,7 @@ function DraggablePiece({ geometry, matProps, initOffset, camera, orbitEnabledRe
     <mesh
       ref={ref}
       geometry={geometry}
-      position={[0, initOffset, 0]}
+      position={initPos}
       onPointerDown={handlePointerDown}
       onPointerEnter={() => { document.body.style.cursor = "grab"; }}
       onPointerLeave={() => { document.body.style.cursor = ""; }}
@@ -1248,27 +1327,53 @@ function DraggablePiece({ geometry, matProps, initOffset, camera, orbitEnabledRe
   );
 }
 
-const DEFORM_FRACTURE = 1.38;
-
-function DeformableShape({ shape, mode, scale, testScale, interactMode, orbitEnabledRef, onSelect, resetKey, matProps }) {
+function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMode, orbitEnabledRef, onSelect, resetKey, matProps, playing, playhead, testTemp, meltingPoint }) {
   const meshRef = useRef();
   const grabsRef = useRef([]);
   const fractureRef = useRef(false);
   const [fractureState, setFractureState] = useState(null);
   const { camera } = useThree();
+  const recordedGrabsRef = useRef([]);
+  const maxDispAtFullRef = useRef(0);
 
-  const { geometry, basePositions, sigma } = useMemo(() => {
-    let geo, sig;
-    if (shape === "sphere") { geo = new THREE.SphereGeometry(1.05, 60, 44); sig = 0.82; }
-    else if (shape === "cube") { geo = new THREE.BoxGeometry(1.8, 1.8, 1.8, 8, 8, 8); sig = 0.88; }
-    else { geo = new THREE.BoxGeometry(2.4, 1.2, 1.6, 10, 5, 7); sig = 0.85; }
+  const { geometry, basePositions } = useMemo(() => {
+    let geo;
+    if (shape === "sphere") geo = new THREE.SphereGeometry(1.05, 60, 44);
+    else if (shape === "cube") geo = new THREE.BoxGeometry(1.8, 1.8, 1.8, 8, 8, 8);
+    else geo = new THREE.BoxGeometry(2.4, 1.2, 1.6, 10, 5, 7);
     const base = new Float32Array(geo.attributes.position.array);
-    return { geometry: geo, basePositions: base, sigma: sig };
+    return { geometry: geo, basePositions: base };
   }, [shape]);
+
+  const geoDims = useMemo(() => {
+    if (shape === "sphere") return { halfW: 1.05, halfH: 1.05 };
+    if (shape === "cube") return { halfW: 0.9, halfH: 0.9 };
+    return { halfW: 1.2, halfH: 0.6 };
+  }, [shape]);
+
+  // Per-test influence radius (sigma for Gaussian weighting)
+  const sigma = useMemo(() => {
+    if (activeTest === "strength") return 0.65;
+    if (activeTest === "bending") return 0.5;
+    if (activeTest === "elongation") return 1.2;
+    if (shape === "sphere") return 0.82;
+    if (shape === "cube") return 0.88;
+    return 0.85;
+  }, [activeTest, shape]);
+
+  // Per-test fracture displacement threshold
+  const fractureThreshold = useMemo(() => {
+    if (activeTest === "bending") return 0.8;
+    if (activeTest === "strength") return 1.1;
+    if (activeTest === "elongation") return 1.8;
+    return 1.38;
+  }, [activeTest]);
 
   function resetAll() {
     fractureRef.current = false;
     grabsRef.current = [];
+    recordedGrabsRef.current = [];
+    maxDispAtFullRef.current = 0;
     setFractureState(null);
     document.body.style.cursor = "";
     if (!meshRef.current) return;
@@ -1280,44 +1385,163 @@ function DeformableShape({ shape, mode, scale, testScale, interactMode, orbitEna
 
   useEffect(() => { resetAll(); }, [resetKey]);
 
-  function applyDeform() {
-    if (!meshRef.current || !grabsRef.current.length || fractureRef.current) return;
+  // Slider-driven thermal expansion for temperature test
+  useEffect(() => {
+    if (activeTest !== "temperature" || !meshRef.current) return;
+    const T_room = 20;
+    const T_melt = meltingPoint ?? 1450;
+    const normalized = Math.max(0, Math.min(1, (testTemp - T_room) / Math.max(1, T_melt - T_room)));
+    const expansion = normalized * 0.10;
     const pos = meshRef.current.geometry.attributes.position;
-    let maxDisp = 0;
-    let worstGrab = grabsRef.current[0];
-    let maxGrabMag = 0;
     for (let i = 0; i < pos.count; i++) {
-      const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
-      let dx = 0, dy = 0, dz = 0;
-      for (const g of grabsRef.current) {
-        const dSq = (bx - g.px) ** 2 + (by - g.py) ** 2 + (bz - g.pz) ** 2;
-        const w = Math.exp(-dSq / (2 * sigma * sigma));
-        dx += g.dx * w; dy += g.dy * w; dz += g.dz * w;
-      }
-      pos.array[i * 3]     = bx + dx;
-      pos.array[i * 3 + 1] = by + dy;
-      pos.array[i * 3 + 2] = bz + dz;
-      const disp = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
-      if (disp > maxDisp) maxDisp = disp;
-    }
-    for (const g of grabsRef.current) {
-      const mag = Math.sqrt(g.dx ** 2 + g.dy ** 2 + g.dz ** 2);
-      if (mag > maxGrabMag) { maxGrabMag = mag; worstGrab = g; }
+      pos.array[i * 3]     = basePositions[i * 3]     * (1 + expansion);
+      pos.array[i * 3 + 1] = basePositions[i * 3 + 1] * (1 + expansion);
+      pos.array[i * 3 + 2] = basePositions[i * 3 + 2] * (1 + expansion);
     }
     pos.needsUpdate = true;
     meshRef.current.geometry.computeVertexNormals();
-    if (maxDisp > DEFORM_FRACTURE) {
-      fractureRef.current = true;
-      const fy = worstGrab.py;
-      const snapshot = new Float32Array(pos.array);
-      const topGeo = buildTornGeometry(snapshot, geometry, fy, true);
-      const botGeo = buildTornGeometry(snapshot, geometry, fy, false);
-      setFractureState({ topGeo, botGeo });
+  }, [activeTest, testTemp, meltingPoint]);
+
+  // Core vertex computation shared by manual deform and playback
+  function computeVertexPositions(pulls) {
+    if (!meshRef.current) return 0;
+    const pos = meshRef.current.geometry.attributes.position;
+    let maxDisp = 0;
+
+    if (activeTest === "strength") {
+      // ASTM E8 axial tension: global symmetric elongation + Poisson necking at waist
+      let totalDy = 0;
+      for (const g of pulls) totalDy += g.dy;
+      const strainFactor = totalDy / Math.max(0.01, geoDims.halfH);
+      const poisson = 0.30;
+      for (let i = 0; i < pos.count; i++) {
+        const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
+        const axialDisp = strainFactor * by;
+        const neckProfile = Math.exp(-(by ** 2) * 2.4);
+        const radialContraction = -poisson * Math.abs(strainFactor) * neckProfile * 1.6;
+        pos.array[i * 3]     = bx * (1 + radialContraction);
+        pos.array[i * 3 + 1] = by + axialDisp;
+        pos.array[i * 3 + 2] = bz * (1 + radialContraction);
+        if (Math.abs(axialDisp) > maxDisp) maxDisp = Math.abs(axialDisp);
+      }
+    } else if (activeTest === "bending") {
+      // ASTM E290 3-point bending: sinusoidal profile along X, fixed ends, free Y and Z
+      for (let i = 0; i < pos.count; i++) {
+        const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
+        let dy = 0, dz = 0;
+        for (const g of pulls) {
+          const bendFactor = Math.cos((Math.PI / 2) * bx / geoDims.halfW);
+          dy += g.dy * bendFactor;
+          dz += g.dz * bendFactor;
+        }
+        pos.array[i * 3]     = bx;
+        pos.array[i * 3 + 1] = by + dy;
+        pos.array[i * 3 + 2] = bz + dz;
+        const d = Math.sqrt(dy * dy + dz * dz);
+        if (d > maxDisp) maxDisp = d;
+      }
+    } else if (activeTest === "elongation") {
+      // Ductile elongation: free-form Gaussian + Poisson lateral contraction (ν≈0.30)
+      for (let i = 0; i < pos.count; i++) {
+        const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
+        let dx = 0, dy = 0, dz = 0;
+        for (const g of pulls) {
+          const dSq = (bx - g.px) ** 2 + (by - g.py) ** 2 + (bz - g.pz) ** 2;
+          const w = Math.exp(-dSq / (2 * sigma * sigma));
+          dx += g.dx * w; dy += g.dy * w; dz += g.dz * w;
+        }
+        const dispMag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const lateralContraction = -0.30 * dispMag / Math.max(0.1, geoDims.halfH) * 0.6;
+        pos.array[i * 3]     = bx * (1 + lateralContraction) + dx;
+        pos.array[i * 3 + 1] = by + dy;
+        pos.array[i * 3 + 2] = bz * (1 + lateralContraction) + dz;
+        if (dispMag > maxDisp) maxDisp = dispMag;
+      }
+    } else {
+      // Default free-form Gaussian
+      for (let i = 0; i < pos.count; i++) {
+        const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
+        let dx = 0, dy = 0, dz = 0;
+        for (const g of pulls) {
+          const dSq = (bx - g.px) ** 2 + (by - g.py) ** 2 + (bz - g.pz) ** 2;
+          const w = Math.exp(-dSq / (2 * sigma * sigma));
+          dx += g.dx * w; dy += g.dy * w; dz += g.dz * w;
+        }
+        pos.array[i * 3]     = bx + dx;
+        pos.array[i * 3 + 1] = by + dy;
+        pos.array[i * 3 + 2] = bz + dz;
+        const disp = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (disp > maxDisp) maxDisp = disp;
+      }
     }
+
+    pos.needsUpdate = true;
+    meshRef.current.geometry.computeVertexNormals();
+    return maxDisp;
   }
+
+  function triggerFracture(pulls, maxDisp) {
+    fractureRef.current = true;
+    maxDispAtFullRef.current = maxDisp;
+    let worstGrab = pulls[0];
+    let maxGrabMag = 0;
+    for (const g of pulls) {
+      const m = Math.sqrt(g.dx ** 2 + g.dy ** 2 + g.dz ** 2);
+      if (m > maxGrabMag) { maxGrabMag = m; worstGrab = g; }
+    }
+
+    let pullNormal, grabPtDeformed;
+    if (activeTest === "bending") {
+      pullNormal = { x: 1, y: 0, z: 0 };
+      grabPtDeformed = { x: 0, y: 0, z: 0 };
+    } else if (activeTest === "strength") {
+      pullNormal = { x: 0, y: 1, z: 0 };
+      grabPtDeformed = { x: 0, y: 0, z: 0 };
+    } else if (activeTest === "elongation") {
+      pullNormal = { x: 0, y: 1, z: 0 };
+      grabPtDeformed = { x: worstGrab.px, y: worstGrab.py + worstGrab.dy * 0.5, z: worstGrab.pz };
+    } else {
+      const pullMag = Math.sqrt(worstGrab.dx ** 2 + worstGrab.dy ** 2 + worstGrab.dz ** 2);
+      pullNormal = pullMag > 0.001
+        ? { x: worstGrab.dx / pullMag, y: worstGrab.dy / pullMag, z: worstGrab.dz / pullMag }
+        : { x: 0, y: 1, z: 0 };
+      grabPtDeformed = {
+        x: worstGrab.px + worstGrab.dx,
+        y: worstGrab.py + worstGrab.dy,
+        z: worstGrab.pz + worstGrab.dz
+      };
+    }
+    const pos = meshRef.current.geometry.attributes.position;
+    const snapshot = new Float32Array(pos.array);
+    const topGeo = buildTornGeometry(snapshot, geometry, grabPtDeformed, pullNormal, true);
+    const botGeo = buildTornGeometry(snapshot, geometry, grabPtDeformed, pullNormal, false);
+    setFractureState({ topGeo, botGeo, pullNormal });
+  }
+
+  function applyDeform() {
+    if (!meshRef.current || !grabsRef.current.length || fractureRef.current) return;
+    const maxDisp = computeVertexPositions(grabsRef.current);
+    if (maxDisp > fractureThreshold) triggerFracture(grabsRef.current, maxDisp);
+  }
+
+  // Playback: replay recorded grabs scaled by playhead
+  useEffect(() => {
+    if (!playing || !recordedGrabsRef.current.length || !meshRef.current) return;
+    if (fractureState) return;
+    const t = playhead / 100;
+    const scaledGrabs = recordedGrabsRef.current.map((g) => ({
+      ...g, dx: g.dx * t, dy: g.dy * t, dz: g.dz * t
+    }));
+    const maxDisp = computeVertexPositions(scaledGrabs);
+    // Trigger fracture at end of playback if original test fractured
+    if (t >= 0.97 && maxDispAtFullRef.current > fractureThreshold) {
+      triggerFracture(scaledGrabs, maxDisp);
+    }
+  }, [playing, playhead]);
 
   function handlePointerDown(e) {
     if (interactMode !== "deform" || fractureRef.current) return;
+    if (activeTest === "temperature") return;
     e.stopPropagation();
     onSelect?.();
     if (orbitEnabledRef) orbitEnabledRef.current = false;
@@ -1331,14 +1555,28 @@ function DeformableShape({ shape, mode, scale, testScale, interactMode, orbitEna
     grabsRef.current.push(grab);
     function onMove(ev) {
       if (fractureRef.current) return;
-      const mdx = (ev.clientX - sx) * 0.006;
-      const mdy = -(ev.clientY - sy) * 0.006;
-      grab.dx = right.x * mdx + camUp.x * mdy;
-      grab.dy = right.y * mdx + camUp.y * mdy;
-      grab.dz = right.z * mdx + camUp.z * mdy;
+      const mdx = (ev.clientX - sx) * 0.008;
+      const mdy = -(ev.clientY - sy) * 0.008;
+      if (activeTest === "strength") {
+        // Strength: vertical drag only (pure axial tension/compression)
+        grab.dx = 0;
+        grab.dy = mdy;
+        grab.dz = 0;
+      } else {
+        // Bending, elongation, default: full 3D free drag
+        grab.dx = right.x * mdx + camUp.x * mdy;
+        grab.dy = right.y * mdx + camUp.y * mdy;
+        grab.dz = right.z * mdx + camUp.z * mdy;
+      }
       applyDeform();
     }
     function onUp() {
+      // Save grab state for playback
+      if (grabsRef.current.length > 0) {
+        recordedGrabsRef.current = grabsRef.current.map((g) => ({ ...g }));
+        maxDispAtFullRef.current = computeVertexPositions(grabsRef.current);
+        // Re-apply to restore visual (computeVertexPositions above already applied)
+      }
       if (orbitEnabledRef) orbitEnabledRef.current = interactMode === "orbit";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
@@ -1348,7 +1586,10 @@ function DeformableShape({ shape, mode, scale, testScale, interactMode, orbitEna
   }
 
   const sc = scale || 1;
-  const ts = testScale || { x: 1, y: 1, z: 1 };
+  const ts = (activeTest === "strength" || activeTest === "bending" || activeTest === "elongation")
+    ? { x: 1, y: 1, z: 1 }
+    : (testScale || { x: 1, y: 1, z: 1 });
+
   return (
     <group scale={[ts.x * sc, ts.y * sc, ts.z * sc]}>
       <mesh
@@ -1356,15 +1597,34 @@ function DeformableShape({ shape, mode, scale, testScale, interactMode, orbitEna
         geometry={geometry}
         visible={!fractureState}
         onPointerDown={handlePointerDown}
-        onPointerEnter={() => { if (interactMode === "deform" && !fractureRef.current) document.body.style.cursor = "crosshair"; }}
+        onPointerEnter={() => {
+          if (interactMode === "deform" && !fractureRef.current && activeTest !== "temperature")
+            document.body.style.cursor = "crosshair";
+        }}
         onPointerLeave={() => { document.body.style.cursor = ""; }}
       >
         <meshStandardMaterial {...matProps} />
       </mesh>
       {fractureState && (
         <>
-          <DraggablePiece geometry={fractureState.topGeo} matProps={matProps} initOffset={0.07} camera={camera} orbitEnabledRef={orbitEnabledRef} interactMode={interactMode} />
-          <DraggablePiece geometry={fractureState.botGeo} matProps={matProps} initOffset={-0.07} camera={camera} orbitEnabledRef={orbitEnabledRef} interactMode={interactMode} />
+          <DraggablePiece
+            geometry={fractureState.topGeo}
+            matProps={matProps}
+            initOffsetVec={fractureState.pullNormal}
+            offsetScale={0.07}
+            camera={camera}
+            orbitEnabledRef={orbitEnabledRef}
+            interactMode={interactMode}
+          />
+          <DraggablePiece
+            geometry={fractureState.botGeo}
+            matProps={matProps}
+            initOffsetVec={fractureState.pullNormal}
+            offsetScale={-0.07}
+            camera={camera}
+            orbitEnabledRef={orbitEnabledRef}
+            interactMode={interactMode}
+          />
         </>
       )}
     </group>
