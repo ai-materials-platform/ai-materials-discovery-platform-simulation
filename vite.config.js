@@ -11,6 +11,18 @@ export default defineConfig({
   base: "./",
   build: {
     outDir: "dist",
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom"],
+          "vendor-three": ["three"],
+          "vendor-r3f": ["@react-three/fiber"],
+          "vendor-lucide": ["lucide-react"],
+          "vendor-xlsx": ["xlsx"]
+        }
+      }
+    }
   }
 });
