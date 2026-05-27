@@ -73,6 +73,22 @@ const DEFAULT_PREDICTION = {
   latticeStability: 91.4
 };
 
+const SIGMA_BY_TEST = { elongation: 1.2, bending: 0.4, strength: 0.65, temperature: 1.5 };
+
+const SPECIMEN_GRAB_HANDLES = [
+  [0.68, 1.3, 0], [-0.68, 1.3, 0], [0, 1.3, 0.68], [0, 1.3, -0.68],
+  [0.32, 0, 0], [-0.32, 0, 0], [0, 0, 0.32],
+  [0.68, -1.3, 0], [-0.68, -1.3, 0], [0, -1.3, 0.68]
+];
+
+function heatmapColor(t) {
+  const c = Math.max(0, Math.min(1, t));
+  if (c < 0.25) { const s = c / 0.25; return [0, s * 0.5, 1.0]; }
+  if (c < 0.5)  { const s = (c - 0.25) / 0.25; return [0, 0.5 + s * 0.5, 1 - s]; }
+  if (c < 0.75) { const s = (c - 0.5) / 0.25; return [s, 1.0, 0]; }
+  const s = (c - 0.75) / 0.25; return [1.0, 1 - s, 0];
+}
+
 function nowTime() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
 }
@@ -221,6 +237,7 @@ function App() {
   const orbitEnabledRef = useRef(true);
   const [resetKey, setResetKey] = useState(0);
   const [simulation, setSimulation] = useState(null);
+  const [deformStats, setDeformStats] = useState({ maxStrain: 0, grabCount: 0 });
   const [logs, setLogs] = useState([
     { time: nowTime(), text: "조성 비율 기반 합금 모델 로드 완료" },
     { time: nowTime(), text: "Python 예측 백엔드 대기 중" }
@@ -416,6 +433,7 @@ function App() {
     setShape("sphere");
     setActiveTest("strength");
     setActiveMode("thermal");
+    setDeformStats({ maxStrain: 0, grabCount: 0 });
     setResetKey((k) => k + 1);
     addLog("그림 초기화 완료");
   }
@@ -563,7 +581,8 @@ function App() {
               ["sphere", "구"],
               ["cube", "정육면체"],
               ["box", "직육면체"],
-              ["lattice", "원자 격자"]
+              ["lattice", "원자 격자"],
+              ["specimen", "시편"]
             ].map(([id, label]) => (
               <button key={id} className={shape === id ? "active" : ""} onClick={() => setShape(id)}>{label}</button>
             ))}
@@ -596,6 +615,7 @@ function App() {
                 orbitEnabledRef={orbitEnabledRef}
                 onSelectId={setSelectedId}
                 resetKey={resetKey}
+                onDeformStats={setDeformStats}
               />
             </Canvas>
             <div className="holo-label left">
@@ -610,6 +630,14 @@ function App() {
               <span>변형률</span>
               <strong>{simulation?.result.strainPercent ?? "3.2"}%</strong>
             </div>
+            {shape === "specimen" && (
+              <div style={{ position: "absolute", right: 14, bottom: 54, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 10px", background: "rgba(4,10,22,0.82)", border: "1px solid rgba(87,242,255,0.28)", borderRadius: 6, pointerEvents: "none" }}>
+                <span style={{ fontSize: 10, color: "#7EC8D4", marginBottom: 2 }}>응력 분포</span>
+                <span style={{ fontSize: 9, color: "#ff4444" }}>HIGH</span>
+                <div style={{ width: 10, height: 80, background: "linear-gradient(to bottom, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff)", borderRadius: 2 }} />
+                <span style={{ fontSize: 9, color: "#4488ff" }}>LOW</span>
+              </div>
+            )}
           </div>
 
           <div className="test-strip">
@@ -656,6 +684,9 @@ function App() {
               <Readout label="파손 위험" value={simulation?.result.failureRisk ?? "대기"} />
               <Readout label="예측 신뢰도" value={`${prediction.predictionConfidence}%`} />
               <Readout label="모델 출처" value={prediction.predictionSource ? "사전학습 모델" : "로컬 모델"} />
+              <Readout label="최대 변형률" value={`${deformStats.maxStrain.toFixed(1)}%`} />
+              <Readout label="그랩 포인트" value={`${deformStats.grabCount}개`} />
+              <Readout label="재료 상태" value={deformStats.maxStrain < 2 ? "탄성" : deformStats.maxStrain < 8 ? "소성" : "파단"} />
             </div>
           </section>
           <section className="analytics-card logs">
@@ -685,12 +716,11 @@ function App() {
   );
 }
 
-function AlloyScene({ alloys, selectedId, mode, activeTest, prediction, simulation, shape, interactMode, orbitEnabledRef, onSelectId, resetKey }) {
+function AlloyScene({ alloys, selectedId, mode, activeTest, prediction, simulation, shape, interactMode, orbitEnabledRef, onSelectId, resetKey, onDeformStats }) {
   return (
     <group>
       <CameraControls orbitEnabledRef={orbitEnabledRef} resetKey={resetKey} />
       <GridFloor />
-      <axesHelper args={[3.5]} position={[-5, -1.28, -5]} />
       {alloys.filter(Boolean).map((alloy, index) => (
         <AlloyModel
           key={alloy.id}
@@ -706,6 +736,7 @@ function AlloyScene({ alloys, selectedId, mode, activeTest, prediction, simulati
           orbitEnabledRef={orbitEnabledRef}
           onSelect={() => onSelectId(alloy.id)}
           resetKey={resetKey}
+          onDeformStats={onDeformStats}
         />
       ))}
     </group>
@@ -742,7 +773,7 @@ function CameraControls({ orbitEnabledRef, resetKey }) {
   return null;
 }
 
-function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation, offset, shape, interactMode, orbitEnabledRef, onSelect, resetKey }) {
+function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation, offset, shape, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats }) {
   const group = useRef();
   const [deform, setDeform] = useState({ x: 1, y: 1, z: 1 });
   const [fractured, setFractured] = useState(false);
@@ -819,6 +850,41 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
   }
 
   const sc = alloy.scale ?? 1;
+
+  if (shape === "specimen") {
+    return (
+      <group position={[offset, 0.1, 0]}>
+        <DeformableMesh
+          mode={mode}
+          activeTest={activeTest}
+          scale={sc}
+          interactMode={interactMode}
+          orbitEnabledRef={orbitEnabledRef}
+          onSelect={onSelect}
+          resetKey={resetKey}
+          onDeformStats={onDeformStats}
+        />
+      </group>
+    );
+  }
+
+  if (interactMode === "deform" && shape !== "lattice") {
+    return (
+      <group position={[offset, 0.1, 0]}>
+        <DeformableShape
+          shape={shape}
+          mode={mode}
+          scale={sc}
+          interactMode={interactMode}
+          orbitEnabledRef={orbitEnabledRef}
+          onSelect={onSelect}
+          resetKey={resetKey}
+          matProps={matProps}
+        />
+      </group>
+    );
+  }
+
   const tx = testScale.x * deform.x * sc;
   const ty = testScale.y * deform.y * sc;
   const tz = testScale.z * deform.z * sc;
@@ -864,7 +930,6 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
           <meshStandardMaterial {...matProps} />
         </mesh>
       )}
-      <CrackLines active={stressRatio > 0.6 || activeTest === "strength"} />
     </group>
   );
 }
@@ -944,13 +1009,330 @@ function HeatParticles({ active, intensity }) {
   );
 }
 
+function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats }) {
+  const meshRef = useRef();
+  const grabPointsRef = useRef([]);
+  const accDisp = useRef(null);
+
+  const { geometry, basePositions } = useMemo(() => {
+    const pts = [];
+    const N = 36;
+    for (let i = 0; i < N; i++) {
+      const t = i / (N - 1);
+      const y = (t - 0.5) * 2.8;
+      const a = Math.abs(t - 0.5) * 2;
+      let r;
+      if (a > 0.8) {
+        r = 0.68;
+      } else if (a > 0.5) {
+        const blend = (a - 0.5) / 0.3;
+        r = 0.32 + 0.36 * (0.5 - 0.5 * Math.cos(blend * Math.PI));
+      } else {
+        r = 0.32;
+      }
+      pts.push(new THREE.Vector2(r, y));
+    }
+    const geo = new THREE.LatheGeometry(pts, 52);
+    const base = new Float32Array(geo.attributes.position.array);
+    const cnt = geo.attributes.position.count;
+    const col = new Float32Array(cnt * 3);
+    for (let i = 0; i < cnt; i++) { col[i * 3] = 0.05; col[i * 3 + 1] = 0.45; col[i * 3 + 2] = 1.0; }
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    return { geometry: geo, basePositions: base };
+  }, []);
+
+  useEffect(() => {
+    if (!meshRef.current) return;
+    const geo = meshRef.current.geometry;
+    geo.attributes.position.array.set(basePositions);
+    geo.attributes.position.needsUpdate = true;
+    geo.computeVertexNormals();
+    const col = geo.attributes.color.array;
+    for (let i = 0; i < col.length; i += 3) { col[i] = 0.05; col[i + 1] = 0.45; col[i + 2] = 1.0; }
+    geo.attributes.color.needsUpdate = true;
+    grabPointsRef.current = [];
+    if (accDisp.current) accDisp.current.fill(0);
+    onDeformStats?.({ maxStrain: 0, grabCount: 0 });
+  }, [resetKey]);
+
+  function applyDeformAndColor() {
+    if (!meshRef.current) return;
+    const geo = meshRef.current.geometry;
+    const pos = geo.attributes.position;
+    const col = geo.attributes.color;
+    const sigma = SIGMA_BY_TEST[activeTest] ?? 0.65;
+    if (!accDisp.current || accDisp.current.length !== pos.count) {
+      accDisp.current = new Float32Array(pos.count);
+    }
+    let maxDisp = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const by = basePositions[i * 3 + 1];
+      let dx = 0, dz = 0;
+      for (const g of grabPointsRef.current) {
+        const dist = Math.abs(by - g.y);
+        const w = Math.exp(-(dist * dist) / (2 * sigma * sigma));
+        dx += g.dx * w;
+        dz += g.dz * w;
+      }
+      pos.array[i * 3]     = basePositions[i * 3]     + dx;
+      pos.array[i * 3 + 1] = basePositions[i * 3 + 1];
+      pos.array[i * 3 + 2] = basePositions[i * 3 + 2] + dz;
+      const disp = Math.sqrt(dx * dx + dz * dz);
+      accDisp.current[i] = disp;
+      if (disp > maxDisp) maxDisp = disp;
+    }
+    for (let i = 0; i < pos.count; i++) {
+      const t = Math.min(1, accDisp.current[i] / 0.32);
+      const [r, g, b] = heatmapColor(t);
+      col.array[i * 3] = r; col.array[i * 3 + 1] = g; col.array[i * 3 + 2] = b;
+    }
+    pos.needsUpdate = true;
+    col.needsUpdate = true;
+    geo.computeVertexNormals();
+    onDeformStats?.({ maxStrain: (maxDisp / 0.32) * 100, grabCount: grabPointsRef.current.length });
+  }
+
+  function handlePointerDown(e) {
+    if (interactMode !== "deform") return;
+    e.stopPropagation();
+    onSelect?.();
+    if (orbitEnabledRef) orbitEnabledRef.current = false;
+    const localPoint = meshRef.current.worldToLocal(e.point.clone());
+    const sx = e.clientX, sy = e.clientY;
+    const gp = { y: localPoint.y, dx: 0, dz: 0 };
+    grabPointsRef.current.push(gp);
+
+    function onMove(ev) {
+      gp.dx = (ev.clientX - sx) * 0.005;
+      gp.dz = (ev.clientY - sy) * 0.005;
+      applyDeformAndColor();
+    }
+    function onUp() {
+      if (orbitEnabledRef) orbitEnabledRef.current = interactMode === "orbit";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  const sc = scale || 1;
+  return (
+    <group scale={[sc, sc, sc]}>
+      <mesh
+        ref={meshRef}
+        geometry={geometry}
+        onPointerDown={handlePointerDown}
+        onPointerEnter={() => { if (interactMode === "deform") document.body.style.cursor = "crosshair"; }}
+        onPointerLeave={() => { document.body.style.cursor = ""; }}
+      >
+        <meshStandardMaterial
+          vertexColors={mode !== "wireframe" && mode !== "xray"}
+          color={mode === "xray" || mode === "wireframe" ? "#57F2FF" : "white"}
+          wireframe={mode === "wireframe"}
+          transparent
+          opacity={mode === "xray" ? 0.28 : 0.92}
+          roughness={0.22}
+          metalness={0.75}
+          side={mode === "xray" ? THREE.DoubleSide : THREE.FrontSide}
+        />
+      </mesh>
+      {interactMode === "deform" && SPECIMEN_GRAB_HANDLES.map(([x, y, z], i) => (
+        <mesh key={i} position={[x, y, z]}>
+          <sphereGeometry args={[0.05, 10, 10]} />
+          <meshBasicMaterial color="#57F2FF" transparent opacity={0.6} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function FractureVisual({ geometry, matProps, fractureY, topRef, botRef }) {
+  const { gl } = useThree();
+  useEffect(() => { gl.localClippingEnabled = true; }, [gl]);
+  const clipTop = useMemo(() => [new THREE.Plane(new THREE.Vector3(0, 1, 0), -fractureY)], [fractureY]);
+  const clipBot = useMemo(() => [new THREE.Plane(new THREE.Vector3(0, -1, 0), fractureY)], [fractureY]);
+  return (
+    <>
+      <mesh ref={topRef} geometry={geometry} position={[0, 0.13, 0]}>
+        <meshStandardMaterial {...matProps} clippingPlanes={clipTop} />
+      </mesh>
+      <mesh ref={botRef} geometry={geometry} position={[0, -0.13, 0]}>
+        <meshStandardMaterial {...matProps} clippingPlanes={clipBot} />
+      </mesh>
+      <mesh position={[0, fractureY, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[3.2, 64]} />
+        <meshBasicMaterial color="#020000" transparent opacity={0.99} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh position={[0, fractureY, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.88, 1.18, 64]} />
+        <meshBasicMaterial color="#FF3300" transparent opacity={0.6} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh position={[0, fractureY, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[1.18, 1.9, 64]} />
+        <meshBasicMaterial color="#FF2200" transparent opacity={0.12} side={THREE.DoubleSide} />
+      </mesh>
+      {Array.from({ length: 12 }).map((_, i) => {
+        const angle = (i / 12) * Math.PI * 2;
+        const r = 0.9 + (i % 4) * 0.1;
+        const yOff = ((i % 3) - 1) * 0.07;
+        return (
+          <mesh key={i} position={[Math.cos(angle) * r, fractureY + yOff, Math.sin(angle) * r]}>
+            <sphereGeometry args={[0.028, 5, 5]} />
+            <meshBasicMaterial color={i % 3 === 0 ? "#FFCC00" : i % 3 === 1 ? "#FF6600" : "#FF2200"} transparent opacity={0.92} />
+          </mesh>
+        );
+      })}
+    </>
+  );
+}
+
+const DEFORM_FRACTURE = 1.38;
+
+function DeformableShape({ shape, mode, scale, interactMode, orbitEnabledRef, onSelect, resetKey, matProps }) {
+  const meshRef = useRef();
+  const topMeshRef = useRef();
+  const botMeshRef = useRef();
+  const grabsRef = useRef([]);
+  const fractureRef = useRef(false);
+  const gapRef = useRef(0.13);
+  const [fractureState, setFractureState] = useState(null);
+  const { camera } = useThree();
+
+  const { geometry, basePositions, sigma } = useMemo(() => {
+    let geo, sig;
+    if (shape === "sphere") { geo = new THREE.SphereGeometry(1.05, 60, 44); sig = 0.82; }
+    else if (shape === "cube") { geo = new THREE.BoxGeometry(1.8, 1.8, 1.8, 8, 8, 8); sig = 0.88; }
+    else { geo = new THREE.BoxGeometry(2.4, 1.2, 1.6, 10, 5, 7); sig = 0.85; }
+    const base = new Float32Array(geo.attributes.position.array);
+    return { geometry: geo, basePositions: base, sigma: sig };
+  }, [shape]);
+
+  function resetAll() {
+    fractureRef.current = false;
+    gapRef.current = 0.13;
+    grabsRef.current = [];
+    setFractureState(null);
+    document.body.style.cursor = "";
+    if (!meshRef.current) return;
+    const pos = meshRef.current.geometry.attributes.position;
+    pos.array.set(basePositions);
+    pos.needsUpdate = true;
+    meshRef.current.geometry.computeVertexNormals();
+  }
+
+  useEffect(() => { resetAll(); }, [resetKey]);
+  useEffect(() => { if (interactMode !== "deform") resetAll(); }, [interactMode]);
+
+  useFrame(() => {
+    if (!fractureRef.current || gapRef.current >= 0.82) return;
+    gapRef.current = Math.min(0.82, gapRef.current + 0.009);
+    if (topMeshRef.current) topMeshRef.current.position.y = gapRef.current;
+    if (botMeshRef.current) botMeshRef.current.position.y = -gapRef.current;
+  });
+
+  function applyDeform() {
+    if (!meshRef.current || !grabsRef.current.length || fractureRef.current) return;
+    const pos = meshRef.current.geometry.attributes.position;
+    let maxDisp = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
+      let dx = 0, dy = 0, dz = 0;
+      for (const g of grabsRef.current) {
+        const dSq = (bx - g.px) ** 2 + (by - g.py) ** 2 + (bz - g.pz) ** 2;
+        const w = Math.exp(-dSq / (2 * sigma * sigma));
+        dx += g.dx * w;
+        dy += g.dy * w;
+        dz += g.dz * w;
+      }
+      pos.array[i * 3]     = bx + dx;
+      pos.array[i * 3 + 1] = by + dy;
+      pos.array[i * 3 + 2] = bz + dz;
+      const disp = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
+      if (disp > maxDisp) maxDisp = disp;
+    }
+    pos.needsUpdate = true;
+    meshRef.current.geometry.computeVertexNormals();
+    if (maxDisp > DEFORM_FRACTURE) {
+      fractureRef.current = true;
+      const g = grabsRef.current[grabsRef.current.length - 1];
+      setFractureState({ y: g.py * 0.4 });
+    }
+  }
+
+  function handlePointerDown(e) {
+    if (interactMode !== "deform" || fractureRef.current) return;
+    e.stopPropagation();
+    onSelect?.();
+    if (orbitEnabledRef) orbitEnabledRef.current = false;
+    const localPt = meshRef.current.worldToLocal(e.point.clone());
+    const sx = e.clientX, sy = e.clientY;
+    const fwd = new THREE.Vector3();
+    camera.getWorldDirection(fwd);
+    const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+    const camUp = camera.up.clone().normalize();
+    const grab = { px: localPt.x, py: localPt.y, pz: localPt.z, dx: 0, dy: 0, dz: 0 };
+    grabsRef.current.push(grab);
+    function onMove(ev) {
+      if (fractureRef.current) return;
+      const mdx = (ev.clientX - sx) * 0.006;
+      const mdy = -(ev.clientY - sy) * 0.006;
+      grab.dx = right.x * mdx + camUp.x * mdy;
+      grab.dy = right.y * mdx + camUp.y * mdy;
+      grab.dz = right.z * mdx + camUp.z * mdy;
+      applyDeform();
+    }
+    function onUp() {
+      if (orbitEnabledRef) orbitEnabledRef.current = interactMode === "orbit";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  const sc = scale || 1;
+  return (
+    <group scale={[sc, sc, sc]}>
+      <mesh
+        ref={meshRef}
+        geometry={geometry}
+        visible={!fractureState}
+        onPointerDown={handlePointerDown}
+        onPointerEnter={() => { if (interactMode === "deform" && !fractureRef.current) document.body.style.cursor = "crosshair"; }}
+        onPointerLeave={() => { document.body.style.cursor = ""; }}
+      >
+        <meshStandardMaterial {...matProps} />
+      </mesh>
+      {fractureState && (
+        <FractureVisual
+          geometry={geometry}
+          matProps={matProps}
+          fractureY={fractureState.y}
+          topRef={topMeshRef}
+          botRef={botMeshRef}
+        />
+      )}
+    </group>
+  );
+}
+
 function GridFloor() {
   return (
-    <group position={[0, -1.28, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-      <gridHelper args={[12, 24, "#1F607A", "#143047"]} />
-      <mesh>
-        <planeGeometry args={[12, 12]} />
-        <meshBasicMaterial color="#07101C" transparent opacity={0.32} side={THREE.DoubleSide} />
+    <group position={[0, -1.28, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[22, 22]} />
+        <meshStandardMaterial color="#040C18" roughness={0.96} transparent opacity={0.9} />
+      </mesh>
+      <gridHelper args={[20, 80, "#0A2E3F", "#061A27"]} />
+      <gridHelper args={[20, 20, "#155A7A", "#0B3650"]} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
+        <ringGeometry args={[4.8, 5.6, 64]} />
+        <meshBasicMaterial color="#00D1FF" transparent opacity={0.07} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.002, 0]}>
+        <circleGeometry args={[0.35, 32]} />
+        <meshBasicMaterial color="#57F2FF" transparent opacity={0.22} />
       </mesh>
     </group>
   );
