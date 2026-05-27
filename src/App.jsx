@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import * as XLSX from "xlsx";
 import {
   Activity,
   BarChart3,
@@ -172,24 +173,40 @@ function firstNumber(source, keys, fallback) {
   return fallback;
 }
 
+// Known alloy element symbols — used to auto-detect composition from flat row imports
+const ELEMENT_SYMBOLS = new Set([
+  "Fe","Ni","Cr","Co","Al","Ti","Mn","Mo","W","Cu","V","Nb","Ta","Zr",
+  "Si","C","B","Hf","Re","Ru","Ir","Pd","Pt","Rh","Os","La","Y","Sc","Mg","Sn"
+]);
+
 function findComposition(payload) {
+  // 1) Try nested composition field (includes state.json "inputs" from ai-materials-discovery-platform)
   const candidates = [
-    payload?.composition,
-    payload?.compositionRatio,
-    payload?.composition_ratios,
+    payload?.composition, payload?.compositionRatio, payload?.composition_ratios,
     payload?.ratios,
-    payload?.input?.composition,
-    payload?.inputs?.composition,
-    payload?.request?.composition,
-    payload?.material?.composition
+    payload?.inputs,          // state.json from the other prediction program stores composition here
+    payload?.input,
+    payload?.input?.composition, payload?.inputs?.composition,
+    payload?.request?.composition, payload?.material?.composition
   ];
-  const found = candidates.find((item) => item && typeof item === "object" && !Array.isArray(item));
-  if (!found) return null;
-  return Object.fromEntries(
-    Object.entries(found)
-      .map(([key, value]) => [key, Number(value)])
-      .filter(([, value]) => Number.isFinite(value) && value >= 0)
-  );
+  for (const cand of candidates) {
+    if (!cand || typeof cand !== "object" || Array.isArray(cand)) continue;
+    const parsed = Object.fromEntries(
+      Object.entries(cand)
+        .filter(([key]) => ELEMENT_SYMBOLS.has(key))
+        .map(([key, value]) => [key, Number(value)])
+        .filter(([, value]) => Number.isFinite(value) && value >= 0)
+    );
+    if (Object.keys(parsed).length > 0) return parsed;
+  }
+  // 2) Flat row format: keys that are element symbols (Excel/CSV single-row export, API response)
+  const flatComp = {};
+  for (const [key, value] of Object.entries(payload ?? {})) {
+    if (ELEMENT_SYMBOLS.has(key) && Number.isFinite(Number(value)) && Number(value) >= 0) {
+      flatComp[key] = Number(value);
+    }
+  }
+  return Object.keys(flatComp).length > 0 ? flatComp : null;
 }
 
 function unwrapPredictionPayload(payload) {
@@ -202,39 +219,92 @@ function unwrapPredictionPayload(payload) {
     payload?.predicted,
     payload?.properties,
     payload?.predictedProperties,
+    // ai-materials-discovery-platform stress_strain_log.json: "초기값" has the properties
+    payload?.["초기값"],
     payload?.props?.pageProps?.prediction,
     payload?.props?.pageProps?.data
   ];
   return chain.find((item) => item && typeof item === "object" && !Array.isArray(item)) ?? payload;
 }
 
+// Extract a numeric value from nested API format: { value: x, uncertainty: y }
+function extractApiValue(obj, keys) {
+  for (const key of keys) {
+    const v = obj?.[key];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "object" && "value" in v) return Number(v.value);
+    if (Number.isFinite(Number(v))) return Number(v);
+  }
+  return null;
+}
+
 function normalizeExternalPrediction(rawPayload) {
   const payload = unwrapPredictionPayload(rawPayload);
-  const nested = unwrapPredictionPayload(payload?.prediction ?? payload?.result ?? payload);
-  const composition = findComposition(payload) ?? findComposition(nested);
+  const nested  = unwrapPredictionPayload(payload?.prediction ?? payload?.result ?? payload);
+  // Search both nested structure and flat root for composition (covers Excel/CSV row imports)
+  const composition = findComposition(payload) ?? findComposition(nested) ?? findComposition(rawPayload);
   if (!composition || Object.keys(composition).length === 0) {
-    throw new Error("예측 결과에서 조성 비율을 찾지 못했습니다.");
+    throw new Error("예측 결과에서 조성 비율을 찾지 못했습니다.\n원소 컬럼(Fe, Ni, Cr 등) 또는 composition/inputs 키가 필요합니다.");
   }
 
-  const density = firstNumber(nested, ["density", "densityGcc", "density_gcc", "predicted_density"], DEFAULT_PREDICTION.density);
-  const strengthMpa = firstNumber(nested, ["strengthMpa", "strength_mpa", "strength", "yieldStrength", "yield_strength", "tensileStrength", "tensile_strength"], DEFAULT_PREDICTION.strengthMpa);
-  const elasticityGpa = firstNumber(nested, ["elasticityGpa", "elasticity_gpa", "elasticModulus", "elastic_modulus", "youngsModulus", "youngs_modulus"], DEFAULT_PREDICTION.elasticityGpa);
-  const thermalConductivity = firstNumber(nested, ["thermalConductivity", "thermal_conductivity", "conductivity", "k"], DEFAULT_PREDICTION.thermalConductivity);
-  const meltingPoint = firstNumber(nested, ["meltingPoint", "melting_point", "meltingPointC", "solidus", "liquidus"], DEFAULT_PREDICTION.meltingPoint);
-  const predictionConfidence = firstNumber(nested, ["predictionConfidence", "confidence", "score", "r2"], DEFAULT_PREDICTION.predictionConfidence);
-  const latticeStability = firstNumber(nested, ["latticeStability", "stability", "phaseStability", "phase_stability"], DEFAULT_PREDICTION.latticeStability);
+  // Source objects to search: covers nested JSON, flat row, and API /predict format
+  // API /predict format: { predictions: { yield_stress_mpa: { value, uncertainty }, uts_mpa: { value, ... } } }
+  const apiPreds = payload?.predictions ?? nested?.predictions ?? null;
+  const src = nested ?? payload;
+
+  const density = firstNumber(src, [
+    "density","densityGcc","density_gcc","predicted_density","밀도"
+  ], DEFAULT_PREDICTION.density);
+
+  // UTS: try API format first, then flat keys, then Korean column names
+  const utsMpa = extractApiValue(apiPreds, ["uts_mpa","utsMpa","UTS"]) ??
+    firstNumber(src, ["utsMpa","uts_mpa","UTS_MPa","UTS","tensileStrength","tensile_strength","인장강도"], null);
+
+  // Yield strength
+  const yieldStressMpa = extractApiValue(apiPreds, ["yield_stress_mpa","yield_stress","yieldStress"]) ??
+    firstNumber(src, ["yield_stress_MPa","yield_stress_mpa","yieldStressMpa","yieldStress","YieldStrength","항복강도","YS"], null);
+
+  // Elongation
+  const elongationPercent = extractApiValue(apiPreds, ["elongation_pct","elongation","elongationPercent"]) ??
+    firstNumber(src, ["elongation_pct","elongation_percent","elongationPercent","Elongation","연신율","El%"], null);
+
+  // Area reduction
+  const areaReductionPercent = extractApiValue(apiPreds, ["area_reduction_pct","area_reduction"]) ??
+    firstNumber(src, ["area_reduction_pct","areaReductionPercent","RA%","단면수축률"], null);
+
+  const elasticityGpa = firstNumber(src, [
+    "elasticityGpa","elastic_modulus_GPa","elasticity_gpa","elasticModulus","elastic_modulus","youngsModulus","E_GPa","탄성계수"
+  ], DEFAULT_PREDICTION.elasticityGpa);
+
+  const thermalConductivity = firstNumber(src, [
+    "thermalConductivity","thermal_conductivity","conductivity","k","열전도율"
+  ], DEFAULT_PREDICTION.thermalConductivity);
+
+  const meltingPoint = firstNumber(src, [
+    "meltingPoint","melting_point","meltingPointC","solidus","liquidus","Tm","용융점"
+  ], DEFAULT_PREDICTION.meltingPoint);
+
+  const predictionConfidence = firstNumber(src, [
+    "predictionConfidence","confidence","score","r2","R2","r2_avg","신뢰도"
+  ], DEFAULT_PREDICTION.predictionConfidence);
+
+  const latticeStability = firstNumber(src, [
+    "latticeStability","stability","phaseStability","phase_stability","격자안정성"
+  ], DEFAULT_PREDICTION.latticeStability);
+
+  // Fallback: if no explicit UTS, use yield stress * 1.3 (typical ratio)
+  const finalUts = utsMpa ?? (yieldStressMpa ? yieldStressMpa * 1.30 : DEFAULT_PREDICTION.strengthMpa);
 
   return {
     composition,
     prediction: {
-      composition,
-      density,
-      strengthMpa,
-      elasticityGpa,
-      thermalConductivity,
-      meltingPoint,
-      predictionConfidence,
-      latticeStability
+      composition, density,
+      strengthMpa: finalUts,
+      utsMpa: finalUts,
+      yieldStressMpa: yieldStressMpa ?? finalUts * 0.72,
+      elongationPercent,
+      areaReductionPercent,
+      elasticityGpa, thermalConductivity, meltingPoint, predictionConfidence, latticeStability
     }
   };
 }
@@ -307,6 +377,7 @@ function App() {
     "Temperature (K)": 293
   });
   const didInitialPrediction = useRef(false);
+  const fileInputRef = useRef(null);
 
   const stressStrainPoints = useMemo(() => {
     const UTS = prediction.strengthMpa;
@@ -599,12 +670,9 @@ function App() {
     setSimulation(null);
     setPlaying(false);
     setPlayhead(0);
-    setShape("sphere");
-    setActiveTest("strength");
-    setActiveMode("thermal");
     setDeformStats({ maxStrain: 0, grabCount: 0, totalPull: 0 });
     setResetKey((k) => k + 1);
-    addLog("그림 초기화 완료");
+    addLog("현재 테스트 변형 초기화 완료");
   }
 
   async function importPredictionFromUrl() {
@@ -635,6 +703,66 @@ function App() {
       addLog(`외부 예측 결과 가져오기 완료: ${imported.resolvedUrl}`);
     } catch (error) {
       addLog(`외부 예측 결과 가져오기 실패: ${error.message}`);
+    }
+  }
+
+  function applyImportedAlloy(normalized, filename) {
+    const alloy = {
+      id: `file-${Date.now()}`,
+      name: filename.replace(/\.[^.]+$/, "").slice(0, 32),
+      category: "파일 가져오기",
+      composition: normalized.composition,
+      densityScale,
+      prediction: normalized.prediction,
+      scale: 1,
+      visible: true,
+      savedAt: nowTime(),
+      color: "#FFB020"
+    };
+    setAlloys((items) => [alloy, ...items]);
+    setSelectedId(alloy.id);
+    setComposition(normalized.composition);
+    setPrediction(normalized.prediction);
+    setSimulation(null);
+    addLog(`파일 가져오기 완료: ${filename} (${Object.keys(normalized.composition).join(", ")})`);
+  }
+
+  async function importFromFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset input so same file can be re-selected
+    e.target.value = "";
+    const name = file.name.toLowerCase();
+    try {
+      if (name.endsWith(".json")) {
+        // JSON: parse and normalize
+        const text = await file.text();
+        let parsed;
+        try { parsed = JSON.parse(text); }
+        catch { throw new Error("JSON 파싱 실패 — 올바른 JSON 형식인지 확인해 주세요"); }
+        // If array, use first element (one row per record)
+        const row = Array.isArray(parsed) ? parsed[0] : parsed;
+        applyImportedAlloy(normalizeExternalPrediction(row), file.name);
+
+      } else if (name.endsWith(".xlsx") || name.endsWith(".xls") || name.endsWith(".csv")) {
+        // Excel / CSV: read with SheetJS, convert first data row to object
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: 0 });
+        if (!rows.length) throw new Error("파일에 데이터 행이 없습니다");
+        // Support multi-row: import all rows as separate alloys, activate last
+        const normalized = rows.map((row) => normalizeExternalPrediction(row));
+        normalized.forEach((norm, idx) => {
+          const rowLabel = rows.length > 1 ? ` (행 ${idx + 1})` : "";
+          applyImportedAlloy(norm, file.name.replace(/\.[^.]+$/, "") + rowLabel + file.name.match(/\.[^.]+$/)?.[0]);
+        });
+        if (rows.length > 1) addLog(`총 ${rows.length}개 행을 개별 합금으로 가져왔습니다`);
+      } else {
+        throw new Error("지원 형식: .json, .xlsx, .xls, .csv");
+      }
+    } catch (err) {
+      addLog(`파일 가져오기 실패: ${err.message}`);
     }
   }
 
@@ -696,6 +824,35 @@ function App() {
             </div>
           </section>
 
+          {/* ── 예측 결과 가져오기 — 합금 목록 바로 아래 ── */}
+          <section className="panel-section">
+            <SectionTitle icon={Link} title="예측 결과 가져오기" />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.xlsx,.xls,.csv"
+              style={{ display: "none" }}
+              onChange={importFromFile}
+            />
+            <button
+              className="command primary"
+              style={{ width: "100%", marginBottom: 5, justifyContent: "center" }}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <UploadCloud size={14} style={{ marginRight: 5 }} />
+              JSON / Excel / CSV 파일 가져오기
+            </button>
+            <p style={{ margin: "0 0 6px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.45 }}>
+              파일을 올리면 합금 목록에 자동 추가됩니다.<br />
+              <span style={{ color: "#57f2ff" }}>원소 컬럼</span> (Fe, Ni, Cr …) + <span style={{ color: "#57f2ff" }}>물성 컬럼</span> (UTS, YieldStrength, Elongation …)<br />
+              Excel 여러 행 → 행마다 별도 합금으로 추가
+            </p>
+            <div className="url-import-row">
+              <input value={predictionUrl} onChange={(event) => setPredictionUrl(event.target.value)} placeholder="GitHub raw JSON / API URL" />
+              <button className="icon-button" title="URL에서 가져오기" onClick={importPredictionFromUrl}><UploadCloud size={16} /></button>
+            </div>
+          </section>
+
           <section className="panel-section">
             <SectionTitle icon={SlidersHorizontal} title="재질 조성 비율" />
             {Object.entries(composition).map(([element, value]) => (
@@ -734,18 +891,20 @@ function App() {
 
           <section className="panel-section">
             <SectionTitle icon={Thermometer} title="공정 조건" />
-            <ControlSlider label={`용체화 온도 ${process["Solution_treatment_temperature"]}°C`} min={900} max={1500} value={process["Solution_treatment_temperature"]} onChange={(value) => updateProcess("Solution_treatment_temperature", value)} />
-            <ControlSlider label={`처리 시간 ${process["Solution_treatment_time(s)"]}초`} min={0} max={172800} step={600} value={process["Solution_treatment_time(s)"]} onChange={(value) => updateProcess("Solution_treatment_time(s)", value)} />
-            <ControlSlider label={`테스트 온도 ${process["Temperature (K)"]}K`} min={273} max={1422} value={process["Temperature (K)"]} onChange={(value) => updateProcess("Temperature (K)", value)} />
-          </section>
-
-          <section className="panel-section">
-            <SectionTitle icon={Link} title="외부 예측 결과 연동" />
-            <div className="url-import-row">
-              <input value={predictionUrl} onChange={(event) => setPredictionUrl(event.target.value)} placeholder="GitHub raw JSON 또는 예측 API URL" />
-              <button className="icon-button" title="예측 결과 가져오기" onClick={importPredictionFromUrl}><UploadCloud size={16} /></button>
+            <div style={{ marginBottom: 2 }}>
+              <ControlSlider label={`용체화 온도 ${process["Solution_treatment_temperature"]}°C`} min={900} max={1500} value={process["Solution_treatment_temperature"]} onChange={(value) => updateProcess("Solution_treatment_temperature", value)} />
+              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.4 }}>합금을 균질한 고용체로 만들기 위해 가열하는 온도. 높을수록 합금 원소 용해도↑, 석출물 재용해</p>
+            </div>
+            <div style={{ marginBottom: 2 }}>
+              <ControlSlider label={`처리 시간 ${process["Solution_treatment_time(s)"]}초`} min={0} max={172800} step={600} value={process["Solution_treatment_time(s)"]} onChange={(value) => updateProcess("Solution_treatment_time(s)", value)} />
+              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.4 }}>용체화 유지 시간. 두꺼운 시편은 충분한 시간 필요 (3600s = 1시간 기준)</p>
+            </div>
+            <div style={{ marginBottom: 2 }}>
+              <ControlSlider label={`테스트 온도 ${process["Temperature (K)"]}K (${process["Temperature (K)"] - 273}°C)`} min={273} max={1422} value={process["Temperature (K)"]} onChange={(value) => updateProcess("Temperature (K)", value)} />
+              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.4 }}>기계적 물성 측정 시험 온도. 293K=실온, 높을수록 강도↓ 연성↑ (ASTM E21 고온 인장)</p>
             </div>
           </section>
+
         </aside>
 
         <section className="viewport-panel panel">
@@ -886,6 +1045,12 @@ function App() {
                 value={testTemp}
                 onChange={setTestTemp}
               />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 10px", margin: "6px 0 4px", fontSize: 10, color: "#7a9bbf" }}>
+                <span><span style={{ color: "#57f2ff" }}>색상 스케일</span>: 파랑→노랑→빨강 = 저온→중온→고온</span>
+                <span><span style={{ color: "#57f2ff" }}>팽창률</span>: 온도 상승 시 체적 균일 팽창 (열팽창계수 적용)</span>
+                <span><span style={{ color: "#57f2ff" }}>용융점 기준</span>: AI 예측 Tm({Math.round(prediction.meltingPoint)}°C) 이전까지 고체 상태</span>
+                <span><span style={{ color: "#57f2ff" }}>테스트 기준</span>: ASTM E21 고온 인장 표준 온도 범위</span>
+              </div>
             </div>
           )}
         </section>
@@ -1388,6 +1553,12 @@ function buildTornGeometry(deformedArr, srcGeo, grabPt, pullNormal, keepOnPullSi
   const t2y = pullNormal.z * t1x - pullNormal.x * t1z;
   const t2z = pullNormal.x * t1y - pullNormal.y * t1x;
 
+  // Seeded pseudo-random: same result for top & bottom pieces → matching tear surfaces
+  function seededRand(seed) {
+    const s = (Math.sin(seed * 127.1 + 311.7) * 43758.5453);
+    return s - Math.floor(s);
+  }
+
   for (let i = 0; i < pos.count; i++) {
     const ox = deformedArr[i * 3], oy = deformedArr[i * 3 + 1], oz = deformedArr[i * 3 + 2];
     // Signed distance from fracture plane (positive = on pull side)
@@ -1399,10 +1570,12 @@ function buildTornGeometry(deformedArr, srcGeo, grabPt, pullNormal, keepOnPullSi
       pos.array[i * 3 + 2] = oz;
     } else {
       const dist = Math.abs(dot);
-      const fade = Math.exp(-dist * 1.8);
-      const noiseAlong = (keepOnPullSide ? 1 : -1) * Math.random() * 0.18 * fade;
-      const noiseP1 = (Math.random() - 0.5) * 0.55 * fade;
-      const noiseP2 = (Math.random() - 0.5) * 0.55 * fade;
+      // Exponential fade: the farther from the fracture plane, the less distortion
+      const fade = Math.exp(-dist * 2.2);
+      // Deterministic noise per vertex index — both pieces share same noise → matching surfaces
+      const noiseAlong = (keepOnPullSide ? 1 : -1) * seededRand(i * 3)     * 0.14 * fade;
+      const noiseP1    = (seededRand(i * 7 + 1) - 0.5) * 0.45 * fade;
+      const noiseP2    = (seededRand(i * 13 + 2) - 0.5) * 0.45 * fade;
       // Project vertex to fracture plane, then add directional noise
       pos.array[i * 3]     = (ox - dot * pullNormal.x) + noiseAlong * pullNormal.x + noiseP1 * t1x + noiseP2 * t2x;
       pos.array[i * 3 + 1] = (oy - dot * pullNormal.y) + noiseAlong * pullNormal.y + noiseP1 * t1y + noiseP2 * t2y;
@@ -1498,9 +1671,9 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
 
   // Per-test fracture displacement threshold
   const fractureThreshold = useMemo(() => {
-    if (activeTest === "bending") return 0.8;
-    if (activeTest === "strength") return 1.1;
-    if (activeTest === "elongation") return 1.8;
+    if (activeTest === "bending") return 0.65;   // 3pt bending: cracks at moderate deflection
+    if (activeTest === "strength") return 0.9;   // axial tension: necks then snaps
+    if (activeTest === "elongation") return 1.6; // ductile elongation: stretches a lot before tearing
     return 1.38;
   }, [activeTest]);
 
@@ -1544,35 +1717,37 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     let maxDisp = 0;
 
     if (activeTest === "strength") {
-      // ASTM E8 axial tension: global symmetric elongation + Poisson necking at waist
-      let totalDy = 0;
-      for (const g of pulls) totalDy += g.dy;
-      const strainFactor = totalDy / Math.max(0.01, geoDims.halfH);
+      // ASTM E8 axial tension (X-axis): symmetric horizontal elongation + Poisson necking at waist
+      let totalDx = 0;
+      for (const g of pulls) totalDx += g.dx;
+      const strainFactor = totalDx / Math.max(0.01, geoDims.halfW);
       const poisson = 0.30;
       for (let i = 0; i < pos.count; i++) {
         const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
-        const axialDisp = strainFactor * by;
-        const neckProfile = Math.exp(-(by ** 2) * 2.4);
+        const axialDisp = strainFactor * bx;            // X elongates
+        const neckProfile = Math.exp(-(bx ** 2) * 2.4); // necking strongest at x=0 waist
         const radialContraction = -poisson * Math.abs(strainFactor) * neckProfile * 1.6;
-        pos.array[i * 3]     = bx * (1 + radialContraction);
-        pos.array[i * 3 + 1] = by + axialDisp;
-        pos.array[i * 3 + 2] = bz * (1 + radialContraction);
+        pos.array[i * 3]     = bx + axialDisp;          // X stretches
+        pos.array[i * 3 + 1] = by * (1 + radialContraction); // Y contracts (Poisson)
+        pos.array[i * 3 + 2] = bz * (1 + radialContraction); // Z contracts (Poisson)
         if (Math.abs(axialDisp) > maxDisp) maxDisp = Math.abs(axialDisp);
       }
     } else if (activeTest === "bending") {
-      // ASTM E290 3-point bending: parabolic deflection profile — max at x=0, pinned at x=±halfW
-      // w(x) = δ_max · (1 – (x/L)²)  — beam theory 포물선 근사
+      // ASTM E290 3-point bending: cubic beam profile — simply-supported with natural curvature
+      // w(r) = δ·(1 - 1.5r² + 0.5r³), r = |bx|/halfW — free rotation at supports, max deflection at center
       let totalPush = 0;
       for (const g of pulls) totalPush += g.dy;
       const halfW = Math.max(geoDims.halfW, 0.01);
 
       for (let i = 0; i < pos.count; i++) {
         const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
-        const xr = bx / halfW;
-        // 포물선: 중앙에서 최대, 양 끝에서 0 (pinned)
-        const profile = Math.max(0.0, 1.0 - xr * xr);
+        const r = Math.min(1.0, Math.abs(bx) / halfW);
+        // Cubic simply-supported beam profile: smooth S-curve, free rotation at support points
+        const profile = Math.max(0.0, 1.0 - 1.5 * r * r + 0.5 * r * r * r);
         const dy = totalPush * profile;
-        pos.array[i * 3]     = bx;
+        // Slight axial stretching at the tension side (bottom), compression at top — visual realism
+        const axialStretch = -(by / Math.max(geoDims.halfH, 0.01)) * totalPush * 0.035 * profile;
+        pos.array[i * 3]     = bx * (1.0 + axialStretch);
         pos.array[i * 3 + 1] = by + dy;
         pos.array[i * 3 + 2] = bz;
         if (Math.abs(dy) > maxDisp) maxDisp = Math.abs(dy);
@@ -1629,14 +1804,17 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
 
     let pullNormal, grabPtDeformed;
     if (activeTest === "bending") {
+      // 3-point bending: fracture plane perpendicular to beam axis (X) at center — max tensile stress at x=0 bottom
       pullNormal = { x: 1, y: 0, z: 0 };
       grabPtDeformed = { x: 0, y: 0, z: 0 };
     } else if (activeTest === "strength") {
-      pullNormal = { x: 0, y: 1, z: 0 };
+      // Axial tension (X-axis): fracture plane perpendicular to pull direction at waist (x=0)
+      pullNormal = { x: 1, y: 0, z: 0 };
       grabPtDeformed = { x: 0, y: 0, z: 0 };
     } else if (activeTest === "elongation") {
+      // Ductile elongation: fracture at minimum cross-section (waist at y=0), not at grab point
       pullNormal = { x: 0, y: 1, z: 0 };
-      grabPtDeformed = { x: worstGrab.px, y: worstGrab.py + worstGrab.dy * 0.5, z: worstGrab.pz };
+      grabPtDeformed = { x: 0, y: 0, z: 0 };
     } else {
       const pullMag = Math.sqrt(worstGrab.dx ** 2 + worstGrab.dy ** 2 + worstGrab.dz ** 2);
       pullNormal = pullMag > 0.001
@@ -1660,8 +1838,10 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     const maxDisp = computeVertexPositions(grabsRef.current);
     if (maxDisp > fractureThreshold) triggerFracture(grabsRef.current, maxDisp);
     // 변형률 통계 보고 (구/박스 형상에서도 우측 패널 반영)
-    const totalPull = grabsRef.current.reduce((s, g) => s + Math.abs(g.dy), 0);
-    const ref = activeTest === "strength" || activeTest === "elongation" ? geoDims.halfH : geoDims.halfW;
+    const totalPull = activeTest === "strength"
+      ? grabsRef.current.reduce((s, g) => s + Math.abs(g.dx), 0)
+      : grabsRef.current.reduce((s, g) => s + Math.abs(g.dy), 0);
+    const ref = activeTest === "strength" ? geoDims.halfW : (activeTest === "elongation" ? geoDims.halfH : geoDims.halfW);
     const strainPct = (totalPull / Math.max(ref, 0.01)) * 100;
     onDeformStats?.({ maxStrain: strainPct, grabCount: grabsRef.current.length, totalPull });
   }
@@ -1693,18 +1873,24 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     camera.getWorldDirection(fwd);
     const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
     const camUp = camera.up.clone().normalize();
-    // 휘어짐 테스트: 항상 중심점(0,0,0)에 하중 적용 (3점 굽힘 표준)
-    const grabPx = activeTest === "bending" ? 0 : localPt.x;
-    const grabPy = activeTest === "bending" ? 0 : localPt.y;
-    const grabPz = activeTest === "bending" ? 0 : localPt.z;
+    // 휘어짐·강도 테스트: 항상 중심점(0,0,0)에 하중 적용 (3점 굽힘 / 대칭 인장)
+    const isCenterLocked = activeTest === "bending" || activeTest === "strength";
+    const grabPx = isCenterLocked ? 0 : localPt.x;
+    const grabPy = isCenterLocked ? 0 : localPt.y;
+    const grabPz = isCenterLocked ? 0 : localPt.z;
     const grab = { px: grabPx, py: grabPy, pz: grabPz, dx: 0, dy: 0, dz: 0 };
     grabsRef.current.push(grab);
     function onMove(ev) {
       if (fractureRef.current) return;
       const mdx = (ev.clientX - sx) * 0.008;
       const mdy = -(ev.clientY - sy) * 0.008;
-      if (activeTest === "strength" || activeTest === "bending") {
-        // 강도·휘어짐: 수직 방향만 (축방향 인장 / 중심 하중)
+      if (activeTest === "strength") {
+        // 인장강도: 수평 드래그 → X축 인장 (좌우로 당김)
+        grab.dx = mdx;
+        grab.dy = 0;
+        grab.dz = 0;
+      } else if (activeTest === "bending") {
+        // 3점 굽힘: 수직 드래그 → Y축 하중 (아래로 누름)
         grab.dx = 0;
         grab.dy = mdy;
         grab.dz = 0;
@@ -2034,38 +2220,44 @@ function BendingFixtures({ geoDims, interactMode }) {
 
 function StrengthClamps({ geoDims, interactMode }) {
   if (interactMode !== "deform") return null;
-  const hh = geoDims.halfH;
-  const hw = geoDims.halfW * 0.72;
+  const hw = geoDims.halfW;
+  const hh = geoDims.halfH * 0.72;
   const clampMat = { color: "#3DFFB5", emissive: "#3DFFB5", emissiveIntensity: 0.45, roughness: 0.2, metalness: 0.85 };
   return (
     <>
-      {/* 상단 클램프 — 위로 당기는 화살표 */}
-      <group position={[0, hh + 0.32, 0]}>
-        <mesh position={[0, 0.18, 0]}>
+      {/* 우측 클램프 — 오른쪽으로 당기는 화살표 → */}
+      <group position={[hw + 0.32, 0, 0]}>
+        {/* 수평 봉 */}
+        <mesh rotation={[0, 0, Math.PI / 2]} position={[0.18, 0, 0]}>
           <cylinderGeometry args={[0.04, 0.04, 0.36, 8]} />
           <meshStandardMaterial {...clampMat} />
         </mesh>
-        <mesh position={[0, 0.36, 0]}>
+        {/* 화살촉 — 오른쪽 방향 */}
+        <mesh rotation={[0, 0, -Math.PI / 2]} position={[0.38, 0, 0]}>
           <coneGeometry args={[0.10, 0.24, 8]} />
           <meshStandardMaterial {...clampMat} />
         </mesh>
+        {/* 클램프 플레이트 */}
         <mesh>
-          <boxGeometry args={[hw * 2, 0.10, hw * 1.2]} />
+          <boxGeometry args={[0.10, hh * 2, 0.22]} />
           <meshStandardMaterial color="#1A4A30" roughness={0.3} metalness={0.8} />
         </mesh>
       </group>
-      {/* 하단 클램프 — 아래로 당기는 화살표 */}
-      <group position={[0, -hh - 0.32, 0]}>
-        <mesh position={[0, -0.18, 0]}>
+      {/* 좌측 클램프 — 왼쪽으로 당기는 화살표 ← */}
+      <group position={[-hw - 0.32, 0, 0]}>
+        {/* 수평 봉 */}
+        <mesh rotation={[0, 0, Math.PI / 2]} position={[-0.18, 0, 0]}>
           <cylinderGeometry args={[0.04, 0.04, 0.36, 8]} />
           <meshStandardMaterial {...clampMat} />
         </mesh>
-        <mesh position={[0, -0.36, 0]} rotation={[Math.PI, 0, 0]}>
+        {/* 화살촉 — 왼쪽 방향 */}
+        <mesh rotation={[0, 0, Math.PI / 2]} position={[-0.38, 0, 0]}>
           <coneGeometry args={[0.10, 0.24, 8]} />
           <meshStandardMaterial {...clampMat} />
         </mesh>
+        {/* 클램프 플레이트 */}
         <mesh>
-          <boxGeometry args={[hw * 2, 0.10, hw * 1.2]} />
+          <boxGeometry args={[0.10, hh * 2, 0.22]} />
           <meshStandardMaterial color="#1A4A30" roughness={0.3} metalness={0.8} />
         </mesh>
       </group>

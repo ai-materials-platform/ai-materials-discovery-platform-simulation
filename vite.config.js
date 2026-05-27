@@ -19,7 +19,8 @@ export default defineConfig({
           "vendor-react": ["react", "react-dom"],
           "vendor-three": ["three"],
           "vendor-r3f": ["@react-three/fiber"],
-          "vendor-lucide": ["lucide-react"]
+          "vendor-lucide": ["lucide-react"],
+          "vendor-xlsx": ["xlsx"]
         }
       }
     }
