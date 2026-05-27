@@ -7,11 +7,14 @@ import {
   Boxes,
   Cpu,
   Database,
+  Download,
   FastForward,
+  FileJson,
   Gauge,
   Layers3,
   Link,
   Maximize2,
+  Minus,
   Pause,
   Play,
   Plus,
@@ -462,6 +465,79 @@ function App() {
     setComposition(nextComposition);
   }
 
+  function addElement(element) {
+    if (!element || composition[element] !== undefined) return;
+    setComposition((prev) => ({ ...prev, [element]: 0 }));
+    addLog(`원소 추가: ${element}`);
+  }
+
+  function removeElement(element) {
+    if (Object.keys(composition).length <= 2) {
+      addLog("최소 2개 원소가 필요합니다");
+      return;
+    }
+    const { [element]: _, ...rest } = composition;
+    setComposition(rest);
+    addLog(`원소 제거: ${element}`);
+  }
+
+  function exportCSV() {
+    const p = prediction;
+    const rows = [
+      ["항목", "값", "단위"],
+      ["합금명", selectedAlloy?.name ?? "-", ""],
+      ["카테고리", selectedAlloy?.category ?? "-", ""],
+      ...Object.entries(p.composition ?? composition).map(([el, v]) => [`조성-${el}`, v, "%"]),
+      ["밀도", p.density, "g/cm³"],
+      ["인장강도 UTS", p.utsMpa ?? p.strengthMpa, "MPa"],
+      ["0.2% 항복강도", p.yieldStressMpa ?? "-", "MPa"],
+      ["연신율", p.elongationPercent ?? "-", "%"],
+      ["단면 수축률", p.areaReductionPercent ?? "-", "%"],
+      ["탄성 계수", p.elasticityGpa, "GPa"],
+      ["열전도율", p.thermalConductivity, "W/mK"],
+      ["용융점", p.meltingPoint, "°C"],
+      ["예측 신뢰도", p.predictionConfidence, "%"],
+      ["격자 안정성", p.latticeStability, ""],
+      ["최대 응력", simulation?.result.maxStressMpa ?? "-", "MPa"],
+      ["변형률", simulation?.result.strainPercent ?? "-", "%"],
+      ["온도", simulation?.result.temperatureC ?? "-", "°C"],
+      ["파손 위험", simulation?.result.failureRisk ?? "-", ""],
+      ["용체화 온도", process["Solution_treatment_temperature"], "°C"],
+      ["처리 시간", process["Solution_treatment_time(s)"], "s"],
+      ["테스트 온도", process["Temperature (K)"], "K"],
+      ["저장 시각", nowTime(), ""]
+    ];
+    const csv = rows.map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `alloy-${(selectedAlloy?.name ?? "result").replace(/\s+/g, "_")}-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addLog(`CSV 내보내기 완료: ${a.download}`);
+  }
+
+  function exportJSON() {
+    const data = {
+      exportedAt: new Date().toISOString(),
+      alloy: selectedAlloy,
+      composition,
+      densityScale,
+      prediction,
+      simulation,
+      process
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `alloy-${(selectedAlloy?.name ?? "result").replace(/\s+/g, "_")}-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addLog(`JSON 내보내기 완료: ${a.download}`);
+  }
+
   function createNewAlloy() {
     const alloy = {
       id: `custom-${Date.now()}`,
@@ -575,8 +651,10 @@ function App() {
         <div className="top-actions">
           <StatusPill icon={Database} label="Python 백엔드" value="연결" tone="ok" />
           <StatusPill icon={WandSparkles} label="예측 모델" value={platformStatus.available ? "사전학습 RF" : "대기"} tone={platformStatus.available ? "ok" : "default"} />
-          <StatusPill icon={Cpu} label="GPU 사용량" value="71%" />
-          <StatusPill icon={Zap} label="FPS" value="118" tone="accent" />
+          <StatusPill icon={Cpu} label="사전학습 모델" value={platformStatus.available ? "RF 연동" : "로컬"} tone={platformStatus.available ? "ok" : "default"} />
+          <StatusPill icon={Zap} label="예측 신뢰도" value={`${prediction.predictionConfidence}%`} tone="accent" />
+          <IconButton title="CSV 내보내기" onClick={exportCSV}><Download size={16} /></IconButton>
+          <IconButton title="JSON 내보내기" onClick={exportJSON}><FileJson size={16} /></IconButton>
           <IconButton title="상태 저장" onClick={saveState}><Save size={16} /></IconButton>
           <IconButton title="전체 화면"><Maximize2 size={16} /></IconButton>
         </div>
@@ -621,16 +699,28 @@ function App() {
           <section className="panel-section">
             <SectionTitle icon={SlidersHorizontal} title="재질 조성 비율" />
             {Object.entries(composition).map(([element, value]) => (
-              <ControlSlider
-                key={element}
-                label={`${element} ${normalizedComposition[element] ?? value}%`}
-                min={0}
-                max={100}
-                value={value}
-                onChange={(next) => updateComposition(element, next)}
-              />
+              <div key={element} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <ControlSlider
+                    label={`${element} ${normalizedComposition[element] ?? value}%`}
+                    min={0}
+                    max={100}
+                    value={value}
+                    onChange={(next) => updateComposition(element, next)}
+                  />
+                </div>
+                <button
+                  className="icon-button"
+                  title={`${element} 제거`}
+                  style={{ flexShrink: 0, fontSize: 13, padding: "2px 5px" }}
+                  onClick={() => removeElement(element)}
+                >
+                  <Minus size={12} />
+                </button>
+              </div>
             ))}
             <CompositionTotalBar total={compositionTotal} />
+            <ElementPicker existingElements={Object.keys(composition)} onAdd={addElement} />
             <ControlSlider label={`밀도 계수 ${densityScale.toFixed(2)}`} min={0.1} max={1} step={0.01} value={densityScale} onChange={setDensityScale} />
             <ControlSlider label={`모델 스케일 ${(selectedAlloy?.scale ?? 1).toFixed(2)}x`} min={0.55} max={1.8} step={0.01} value={selectedAlloy?.scale ?? 1} onChange={updateScale} />
             <div className="composition-actions">
@@ -778,9 +868,16 @@ function App() {
           <div className="kpi-grid">
             <Metric label="0.2% 항복강도" value={`${prediction.yieldStressMpa ?? "-"} MPa`} tone="ok" />
             <Metric label="인장강도 UTS" value={`${prediction.utsMpa ?? prediction.strengthMpa} MPa`} />
-            <Metric label="연신율" value={`${prediction.elongationPercent ?? "-"} %`} />
-            <Metric label="단면 수축률" value={`${prediction.areaReductionPercent ?? "-"} %`} />
+            <Metric label="연신율" value={`${prediction.elongationPercent != null ? prediction.elongationPercent : "-"} %`} />
+            <Metric label="단면 수축률" value={`${prediction.areaReductionPercent != null ? prediction.areaReductionPercent : "-"} %`} />
           </div>
+
+          {compareMode && alloys.length > 1 && (
+            <section className="analytics-card">
+              <SectionTitle icon={BarChart3} title="합금 비교 (상위 3개)" />
+              <CompareTable alloys={alloys.slice(0, 3)} />
+            </section>
+          )}
 
           <section className="analytics-card">
             <SectionTitle icon={BarChart3} title="온도 분석" />
@@ -791,7 +888,7 @@ function App() {
             <StressStrainChart
               points={stressStrainPoints}
               UTS={prediction.strengthMpa}
-              yieldStress={prediction.strengthMpa * 0.70}
+              yieldStress={prediction.yieldStressMpa ?? prediction.strengthMpa * 0.70}
               elongation={prediction.elongationPercent ?? Math.max(5, 50 - prediction.strengthMpa / 40)}
             />
           </section>
@@ -1751,6 +1848,89 @@ function StressStrainChart({ points, UTS, yieldStress, elongation }) {
         <span style={{ color: "#FF5A5A" }}>{UTS.toFixed(0)} MPa</span>
         <span>{elongation.toFixed(1)}%</span>
       </div>
+    </div>
+  );
+}
+
+function CompareTable({ alloys }) {
+  const metrics = [
+    { key: "strengthMpa", label: "UTS (MPa)" },
+    { key: "yieldStressMpa", label: "항복강도 (MPa)" },
+    { key: "elongationPercent", label: "연신율 (%)" },
+    { key: "elasticityGpa", label: "탄성 계수 (GPa)" },
+    { key: "meltingPoint", label: "용융점 (°C)" },
+    { key: "predictionConfidence", label: "신뢰도 (%)" }
+  ];
+  const style = { fontSize: 10, borderCollapse: "collapse", width: "100%" };
+  const tdStyle = { padding: "3px 5px", borderBottom: "1px solid rgba(87,242,255,0.1)", color: "#a8b3c7" };
+  const thStyle = { ...tdStyle, color: "#57f2ff", fontWeight: 600, textAlign: "right" };
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={style}>
+        <thead>
+          <tr>
+            <th style={{ ...thStyle, textAlign: "left" }}>항목</th>
+            {alloys.map((a) => <th key={a.id} style={thStyle}>{a.name.slice(0, 10)}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {metrics.map(({ key, label }) => {
+            const vals = alloys.map((a) => Number(a.prediction?.[key] ?? 0));
+            const maxVal = Math.max(...vals);
+            return (
+              <tr key={key}>
+                <td style={tdStyle}>{label}</td>
+                {alloys.map((a, i) => {
+                  const v = a.prediction?.[key];
+                  const isBest = v != null && Number(v) === maxVal && maxVal > 0;
+                  return (
+                    <td key={a.id} style={{ ...tdStyle, textAlign: "right", color: isBest ? "var(--success)" : "#eaf2ff", fontWeight: isBest ? 600 : 400 }}>
+                      {v != null ? v : "-"}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const ADDABLE_ELEMENTS = ["Mo", "W", "Mn", "Nb", "Cu", "Co", "V", "Zr", "Ta", "B", "N", "C", "P", "S", "Sn", "Pb"];
+
+function ElementPicker({ existingElements, onAdd }) {
+  const [open, setOpen] = useState(false);
+  const available = ADDABLE_ELEMENTS.filter((el) => !existingElements.includes(el));
+  if (available.length === 0) return null;
+  return (
+    <div style={{ margin: "4px 0 2px", position: "relative" }}>
+      <button
+        className="command"
+        style={{ width: "100%", justifyContent: "center", fontSize: 11, padding: "4px 8px" }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Plus size={12} /> 원소 추가
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
+          background: "#0f1928", border: "1px solid rgba(87,242,255,0.3)", borderRadius: 6,
+          padding: 8, display: "flex", flexWrap: "wrap", gap: 4
+        }}>
+          {available.map((el) => (
+            <button
+              key={el}
+              className="command"
+              style={{ fontSize: 11, padding: "3px 8px", minWidth: 36 }}
+              onClick={() => { onAdd(el); setOpen(false); }}
+            >
+              {el}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
