@@ -337,8 +337,8 @@ function CompositionTotalBar({ total }) {
         <span>조성 합계</span>
         <span style={{ fontWeight: 600 }}>{total.toFixed(1)}% {over ? "▲ 초과" : under ? "▼ 부족" : "✓ 정상"}</span>
       </div>
-      <div style={{ height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 2, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: tone, borderRadius: 2, transition: "width 0.3s" }} />
+      <div className="comp-bar-track">
+        <div style={{ height: "100%", width: `${pct}%`, background: tone, borderRadius: 1, transition: "width 0.3s" }} />
       </div>
     </div>
   );
@@ -842,9 +842,9 @@ function App() {
               <UploadCloud size={14} style={{ marginRight: 5 }} />
               JSON / Excel / CSV 파일 가져오기
             </button>
-            <p style={{ margin: "0 0 6px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.45 }}>
+            <p style={{ margin: "0 0 6px", fontSize: 10, color: "var(--text-muted)", lineHeight: 1.5, fontFamily: "var(--mono)" }}>
               파일을 올리면 합금 목록에 자동 추가됩니다.<br />
-              <span style={{ color: "#57f2ff" }}>원소 컬럼</span> (Fe, Ni, Cr …) + <span style={{ color: "#57f2ff" }}>물성 컬럼</span> (UTS, YieldStrength, Elongation …)<br />
+              <span style={{ color: "var(--accent)" }}>원소 컬럼</span> (Fe, Ni, Cr …) + <span style={{ color: "var(--accent)" }}>물성 컬럼</span> (UTS, YieldStrength, Elongation …)<br />
               Excel 여러 행 → 행마다 별도 합금으로 추가
             </p>
             <div className="url-import-row">
@@ -893,15 +893,15 @@ function App() {
             <SectionTitle icon={Thermometer} title="공정 조건" />
             <div style={{ marginBottom: 2 }}>
               <ControlSlider label={`용체화 온도 ${process["Solution_treatment_temperature"]}°C`} min={900} max={1500} value={process["Solution_treatment_temperature"]} onChange={(value) => updateProcess("Solution_treatment_temperature", value)} />
-              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.4 }}>합금을 균질한 고용체로 만들기 위해 가열하는 온도. 높을수록 합금 원소 용해도↑, 석출물 재용해</p>
+              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "var(--text-muted)", lineHeight: 1.4, fontFamily: "var(--mono)" }}>합금을 균질한 고용체로 만들기 위해 가열하는 온도. 높을수록 합금 원소 용해도↑, 석출물 재용해</p>
             </div>
             <div style={{ marginBottom: 2 }}>
               <ControlSlider label={`처리 시간 ${process["Solution_treatment_time(s)"]}초`} min={0} max={172800} step={600} value={process["Solution_treatment_time(s)"]} onChange={(value) => updateProcess("Solution_treatment_time(s)", value)} />
-              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.4 }}>용체화 유지 시간. 두꺼운 시편은 충분한 시간 필요 (3600s = 1시간 기준)</p>
+              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "var(--text-muted)", lineHeight: 1.4, fontFamily: "var(--mono)" }}>용체화 유지 시간. 두꺼운 시편은 충분한 시간 필요 (3600s = 1시간 기준)</p>
             </div>
             <div style={{ marginBottom: 2 }}>
               <ControlSlider label={`테스트 온도 ${process["Temperature (K)"]}K (${process["Temperature (K)"] - 273}°C)`} min={273} max={1422} value={process["Temperature (K)"]} onChange={(value) => updateProcess("Temperature (K)", value)} />
-              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "#7a9bbf", lineHeight: 1.4 }}>기계적 물성 측정 시험 온도. 293K=실온, 높을수록 강도↓ 연성↑ (ASTM E21 고온 인장)</p>
+              <p style={{ margin: "2px 0 8px 2px", fontSize: 10, color: "var(--text-muted)", lineHeight: 1.4, fontFamily: "var(--mono)" }}>기계적 물성 측정 시험 온도. 293K=실온, 높을수록 강도↓ 연성↑ (ASTM E21 고온 인장)</p>
             </div>
           </section>
 
@@ -944,7 +944,7 @@ function App() {
 
           <div className={`viewport-stage${interactMode === "deform" ? " deform-active" : ""}`}>
             <Canvas camera={{ position: [0, 2.1, 6], fov: 46 }} dpr={[1, 2]}>
-              <color attach="background" args={["#060B16"]} />
+              <color attach="background" args={["#2e4260"]} />
               <ambientLight intensity={0.65} />
               <pointLight position={[3, 4, 5]} intensity={42} color="#57F2FF" />
               <pointLight position={[-4, 2, -3]} intensity={18} color="#3DFFB5" />
@@ -973,6 +973,20 @@ function App() {
               prediction={prediction}
               deformStats={deformStats}
             />
+
+            {/* STH 컬러맵 레전드 */}
+            <CaeColormapLegend maxVal={simulation?.result.maxStressMpa ?? prediction.strengthMpa} />
+
+            {/* unit : mm 레이블 */}
+            <div className="cae-unit-label">unit : mm</div>
+
+            {/* Float labels */}
+            <div className="cae-float-label" style={{ right: 100, top: "28%" }}>
+              Start: {Math.round((simulation?.result.maxStressMpa ?? prediction.strengthMpa) * 0.56)}
+            </div>
+            <div className="cae-float-label" style={{ right: 100, top: "58%" }}>
+              End: {Math.round((simulation?.result.maxStressMpa ?? prediction.strengthMpa) * 0.50)}
+            </div>
 
             <div className="holo-label left">
               {activeTest === "bending" ? (
@@ -1014,11 +1028,11 @@ function App() {
               )}
             </div>
             {shape === "specimen" && (
-              <div style={{ position: "absolute", right: 14, bottom: 54, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 10px", background: "rgba(4,10,22,0.82)", border: "1px solid rgba(87,242,255,0.28)", borderRadius: 6, pointerEvents: "none" }}>
-                <span style={{ fontSize: 10, color: "#7EC8D4", marginBottom: 2 }}>응력 분포</span>
-                <span style={{ fontSize: 9, color: "#ff4444" }}>HIGH</span>
-                <div style={{ width: 10, height: 80, background: "linear-gradient(to bottom, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff)", borderRadius: 2 }} />
-                <span style={{ fontSize: 9, color: "#4488ff" }}>LOW</span>
+              <div style={{ position: "absolute", right: 14, bottom: 54, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "7px 9px", background: "rgba(255,255,255,0.92)", border: "1px solid #d0cdc6", borderRadius: 2, pointerEvents: "none" }}>
+                <span style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 600, color: "#4a4744", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 3 }}>응력 분포</span>
+                <span style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#c0392b", fontWeight: 600 }}>HIGH</span>
+                <div style={{ width: 10, height: 72, background: "linear-gradient(to bottom, #ff0000, #ffff00, #00ff00, #00ccff, #0033ff)", borderRadius: 1 }} />
+                <span style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#1a5fa8", fontWeight: 600 }}>LOW</span>
               </div>
             )}
           </div>
@@ -1045,11 +1059,11 @@ function App() {
                 value={testTemp}
                 onChange={setTestTemp}
               />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 10px", margin: "6px 0 4px", fontSize: 10, color: "#7a9bbf" }}>
-                <span><span style={{ color: "#57f2ff" }}>색상 스케일</span>: 파랑→노랑→빨강 = 저온→중온→고온</span>
-                <span><span style={{ color: "#57f2ff" }}>팽창률</span>: 온도 상승 시 체적 균일 팽창 (열팽창계수 적용)</span>
-                <span><span style={{ color: "#57f2ff" }}>용융점 기준</span>: AI 예측 Tm({Math.round(prediction.meltingPoint)}°C) 이전까지 고체 상태</span>
-                <span><span style={{ color: "#57f2ff" }}>테스트 기준</span>: ASTM E21 고온 인장 표준 온도 범위</span>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 10px", margin: "6px 0 4px", fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--mono)" }}>
+                <span><span style={{ color: "var(--accent)" }}>색상 스케일</span>: 파랑→노랑→빨강 = 저온→중온→고온</span>
+                <span><span style={{ color: "var(--accent)" }}>팽창률</span>: 온도 상승 시 체적 균일 팽창 (열팽창계수 적용)</span>
+                <span><span style={{ color: "var(--accent)" }}>용융점 기준</span>: AI 예측 Tm({Math.round(prediction.meltingPoint)}°C) 이전까지 고체 상태</span>
+                <span><span style={{ color: "var(--accent)" }}>테스트 기준</span>: ASTM E21 고온 인장 표준 온도 범위</span>
               </div>
             </div>
           )}
@@ -1115,9 +1129,12 @@ function App() {
 
       <footer className="timeline-panel panel">
         <div className="timeline-controls">
-          <IconButton title="이전 프레임"><SkipBack size={16} /></IconButton>
-          <IconButton title={playing ? "일시정지" : "재생"} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause size={16} /> : <Play size={16} />}</IconButton>
-          <IconButton title="다음 프레임"><SkipForward size={16} /></IconButton>
+          <IconButton title="처음으로" onClick={() => { setPlayhead(0); setPlaying(false); setResetKey((k) => k + 1); }}><SkipBack size={16} /></IconButton>
+          <IconButton title={playing ? "일시정지" : "재생"} onClick={() => {
+            if (!playing) { if (playhead >= 99) setPlayhead(0); setPlaying(true); }
+            else setPlaying(false);
+          }}>{playing ? <Pause size={16} /> : <Play size={16} />}</IconButton>
+          <IconButton title="끝으로" onClick={() => { setPlayhead(100); setPlaying(false); }}><SkipForward size={16} /></IconButton>
           <span>재생 속도</span>
           <input type="range" min="0.5" max="3" step="0.1" defaultValue="1.4" />
         </div>
@@ -1295,6 +1312,8 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
           onSelect={onSelect}
           resetKey={resetKey}
           onDeformStats={onDeformStats}
+          playing={playing}
+          playhead={playhead}
         />
       </group>
     );
@@ -1400,7 +1419,7 @@ function HeatParticles({ active, intensity }) {
   );
 }
 
-function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats }) {
+function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats, playing, playhead }) {
   const meshRef = useRef();
   const grabPointsRef = useRef([]);
   const accDisp = useRef(null);
@@ -1446,12 +1465,13 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     onDeformStats?.({ maxStrain: 0, grabCount: 0 });
   }, [resetKey]);
 
-  function applyDeformAndColor() {
+  function applyDeformAndColor(overrideGrabs) {
     if (!meshRef.current) return;
     const geo = meshRef.current.geometry;
     const pos = geo.attributes.position;
     const col = geo.attributes.color;
     const sigma = SIGMA_BY_TEST[activeTest] ?? 0.65;
+    const grabs = overrideGrabs ?? grabPointsRef.current;
     if (!accDisp.current || accDisp.current.length !== pos.count) {
       accDisp.current = new Float32Array(pos.count);
     }
@@ -1459,7 +1479,7 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     for (let i = 0; i < pos.count; i++) {
       const by = basePositions[i * 3 + 1];
       let dx = 0, dz = 0;
-      for (const g of grabPointsRef.current) {
+      for (const g of grabs) {
         const dist = Math.abs(by - g.y);
         const w = Math.exp(-(dist * dist) / (2 * sigma * sigma));
         dx += g.dx * w;
@@ -1473,15 +1493,27 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
       if (disp > maxDisp) maxDisp = disp;
     }
     for (let i = 0; i < pos.count; i++) {
-      const t = Math.min(1, accDisp.current[i] / 0.32);
-      const [r, g, b] = heatmapColor(t);
+      const colorT = Math.min(1, accDisp.current[i] / 0.32);
+      const [r, g, b] = heatmapColor(colorT);
       col.array[i * 3] = r; col.array[i * 3 + 1] = g; col.array[i * 3 + 2] = b;
     }
     pos.needsUpdate = true;
     col.needsUpdate = true;
     geo.computeVertexNormals();
-    onDeformStats?.({ maxStrain: (maxDisp / 0.32) * 100, grabCount: grabPointsRef.current.length });
+    onDeformStats?.({ maxStrain: (maxDisp / 0.32) * 100, grabCount: grabs.length });
   }
+
+  // 재생: 녹화된 그랩 재생 또는 자동 하이라이트 애니메이션
+  useEffect(() => {
+    if (!playing || !meshRef.current) return;
+    const t = playhead / 100;
+    if (grabPointsRef.current.length > 0) {
+      applyDeformAndColor(grabPointsRef.current.map((g) => ({ ...g, dx: g.dx * t, dz: g.dz * t })));
+    } else {
+      const maxPull = activeTest === "bending" ? 0.22 * t : 0.36 * t;
+      applyDeformAndColor([{ y: 0, dx: maxPull, dz: 0 }]);
+    }
+  }, [playing, playhead]);
 
   function handlePointerDown(e) {
     if (interactMode !== "deform") return;
@@ -1633,6 +1665,25 @@ function DraggablePiece({ geometry, matProps, initOffsetVec, offsetScale, camera
       <meshStandardMaterial {...matProps} side={THREE.DoubleSide} />
     </mesh>
   );
+}
+
+function buildAutoGrabs(activeTest, t, elasticityGpa, strengthMpa, geoDims) {
+  const E = Math.max(50, elasticityGpa ?? 150);
+  const UTS = Math.max(300, strengthMpa ?? 800);
+  const hh = geoDims?.halfH ?? 1.0;
+  if (activeTest === "strength") {
+    const maxPull = Math.min(0.85, 0.40 + UTS / 4000);
+    return [{ px: 0, py: 0, pz: 0, dx: maxPull * t, dy: 0, dz: 0 }];
+  }
+  if (activeTest === "bending") {
+    const maxBend = Math.max(0.18, Math.min(0.62, 130 / E));
+    return [{ px: 0, py: 0, pz: 0, dx: 0, dy: -(maxBend * t), dz: 0 }];
+  }
+  if (activeTest === "elongation") {
+    const maxElongation = Math.min(1.30, 0.55 + (UTS < 900 ? 0.40 : 0.10));
+    return [{ px: 0, py: hh * 0.55, pz: 0, dx: 0, dy: maxElongation * t, dz: 0 }];
+  }
+  return [];
 }
 
 function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMode, orbitEnabledRef, onSelect, resetKey, matProps, playing, playhead, testTemp, meltingPoint, onDeformStats, elasticityGpa, strengthMpa }) {
@@ -1846,18 +1897,35 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     onDeformStats?.({ maxStrain: strainPct, grabCount: grabsRef.current.length, totalPull });
   }
 
-  // Playback: replay recorded grabs scaled by playhead
+  // Playback: replay recorded grabs or auto-animate from test type
   useEffect(() => {
-    if (!playing || !recordedGrabsRef.current.length || !meshRef.current) return;
+    if (!playing || !meshRef.current) return;
     if (fractureState) return;
     const t = playhead / 100;
-    const scaledGrabs = recordedGrabsRef.current.map((g) => ({
-      ...g, dx: g.dx * t, dy: g.dy * t, dz: g.dz * t
-    }));
-    const maxDisp = computeVertexPositions(scaledGrabs);
-    // Trigger fracture at end of playback if original test fractured
-    if (t >= 0.97 && maxDispAtFullRef.current > fractureThreshold) {
-      triggerFracture(scaledGrabs, maxDisp);
+
+    if (recordedGrabsRef.current.length > 0) {
+      // 녹화된 수동 변형 재생
+      const scaledGrabs = recordedGrabsRef.current.map((g) => ({
+        ...g, dx: g.dx * t, dy: g.dy * t, dz: g.dz * t
+      }));
+      const maxDisp = computeVertexPositions(scaledGrabs);
+      if (t >= 0.97 && maxDispAtFullRef.current > fractureThreshold) {
+        triggerFracture(scaledGrabs, maxDisp);
+      }
+      const totalPull = activeTest === "strength"
+        ? scaledGrabs.reduce((s, g) => s + Math.abs(g.dx), 0)
+        : scaledGrabs.reduce((s, g) => s + Math.abs(g.dy), 0);
+      onDeformStats?.({ maxStrain: (totalPull / Math.max(geoDims.halfW, 0.01)) * 100, grabCount: scaledGrabs.length, totalPull });
+    } else {
+      // 수동 변형 없음 — 테스트 타입 기반 자동 하이라이트 재생
+      const autoGrabs = buildAutoGrabs(activeTest, t, elasticityGpa, strengthMpa, geoDims);
+      if (autoGrabs.length > 0) {
+        computeVertexPositions(autoGrabs);
+        const totalPull = activeTest === "strength"
+          ? autoGrabs.reduce((s, g) => s + Math.abs(g.dx), 0)
+          : autoGrabs.reduce((s, g) => s + Math.abs(g.dy), 0);
+        onDeformStats?.({ maxStrain: (totalPull / Math.max(geoDims.halfW, 0.01)) * 100, grabCount: 1, totalPull });
+      }
     }
   }, [playing, playhead]);
 
@@ -1978,10 +2046,10 @@ function GridFloor() {
     <group position={[0, -1.28, 0]}>
       <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[22, 22]} />
-        <meshStandardMaterial color="#040C18" roughness={0.96} transparent opacity={0.9} />
+        <meshStandardMaterial color="#4e6e90" roughness={0.96} transparent opacity={0.9} />
       </mesh>
-      <gridHelper args={[20, 80, "#0A2E3F", "#061A27"]} />
-      <gridHelper args={[20, 20, "#155A7A", "#0B3650"]} />
+      <gridHelper args={[20, 80, "#2a4a6a", "#1e3a58"]} />
+      <gridHelper args={[20, 20, "#3a6a9a", "#2a5278"]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
         <ringGeometry args={[4.8, 5.6, 64]} />
         <meshBasicMaterial color="#00D1FF" transparent opacity={0.07} side={THREE.DoubleSide} />
@@ -2076,21 +2144,21 @@ function StressStrainChart({ points, UTS, yieldStress, elongation }) {
   return (
     <div style={{ position: "relative" }}>
       <svg className="mini-chart" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ display: "block" }}>
-        <line x1="2" y1="8" x2="2" y2="96" stroke="#2a3a5a" strokeWidth="1" />
-        <line x1="2" y1="96" x2="98" y2="96" stroke="#2a3a5a" strokeWidth="1" />
+        <line x1="2" y1="8" x2="2" y2="96" stroke="#d0cdc6" strokeWidth="1" />
+        <line x1="2" y1="96" x2="98" y2="96" stroke="#d0cdc6" strokeWidth="1" />
         {yieldX && (
-          <line x1={yieldX} y1="10" x2={yieldX} y2="96" stroke="#FFB020" strokeWidth="0.8" strokeDasharray="3,2" opacity="0.65" />
+          <line x1={yieldX} y1="10" x2={yieldX} y2="96" stroke="#b45309" strokeWidth="0.8" strokeDasharray="3,2" opacity="0.75" />
         )}
-        <line x1={utsX} y1="10" x2={utsX} y2="96" stroke="#FF5A5A" strokeWidth="0.8" strokeDasharray="3,2" opacity="0.65" />
-        <polyline points={svgPoints} fill="none" stroke="#00D1FF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        <polygon points={`2,96 ${svgPoints} 98,96`} fill="#00D1FF" opacity="0.10" />
-        {yieldX && <text x={yieldX + 1} y="14" fill="#FFB020" fontSize="6" opacity="0.85">항복</text>}
-        <text x={utsX + 1} y="14" fill="#FF5A5A" fontSize="6" opacity="0.85">UTS</text>
+        <line x1={utsX} y1="10" x2={utsX} y2="96" stroke="#c0392b" strokeWidth="0.8" strokeDasharray="3,2" opacity="0.75" />
+        <polyline points={svgPoints} fill="none" stroke="#1a5fa8" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        <polygon points={`2,96 ${svgPoints} 98,96`} fill="#1a5fa8" opacity="0.08" />
+        {yieldX && <text x={yieldX + 1} y="14" fill="#b45309" fontSize="6" opacity="0.9">항복</text>}
+        <text x={utsX + 1} y="14" fill="#c0392b" fontSize="6" opacity="0.9">UTS</text>
       </svg>
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "#7a8fa8" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--text-muted)", fontFamily: "'IBM Plex Mono', monospace" }}>
         <span>0</span>
-        <span style={{ color: "#FFB020" }}>{yieldStress.toFixed(0)} MPa</span>
-        <span style={{ color: "#FF5A5A" }}>{UTS.toFixed(0)} MPa</span>
+        <span style={{ color: "#b45309" }}>{yieldStress.toFixed(0)} MPa</span>
+        <span style={{ color: "#c0392b" }}>{UTS.toFixed(0)} MPa</span>
         <span>{elongation.toFixed(1)}%</span>
       </div>
     </div>
@@ -2159,15 +2227,15 @@ function TestInfoHUD({ activeTest, interactMode, prediction, deformStats }) {
   return (
     <div style={{
       position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
-      background: "rgba(4,10,24,0.88)", border: "1px solid rgba(87,242,255,0.35)",
-      borderRadius: 8, padding: "8px 16px", pointerEvents: "none",
-      textAlign: "center", minWidth: 320, maxWidth: 520, zIndex: 10
+      background: "rgba(255,255,255,0.93)", border: "1px solid #d0cdc6",
+      borderRadius: 2, padding: "7px 14px", pointerEvents: "none",
+      textAlign: "center", minWidth: 300, maxWidth: 500, zIndex: 10
     }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: "#57F2FF", marginBottom: 3 }}>{meta.title}</div>
-      <div style={{ fontSize: 10, color: "#a8b3c7", marginBottom: loadLine ? 4 : 0 }}>{meta.desc}</div>
-      {loadLine && <div style={{ fontSize: 11, color: "#FFB020", fontWeight: 600 }}>{loadLine}</div>}
+      <div style={{ fontSize: 11, fontWeight: 600, color: "#1a5fa8", marginBottom: 2, fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.3px" }}>{meta.title}</div>
+      <div style={{ fontSize: 10, color: "#6b6460", marginBottom: loadLine ? 4 : 0, fontFamily: "'IBM Plex Sans', sans-serif" }}>{meta.desc}</div>
+      {loadLine && <div style={{ fontSize: 10, color: "#b45309", fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace" }}>{loadLine}</div>}
       {interactMode === "deform" && !loadLine && (
-        <div style={{ fontSize: 10, color: "#4488aa", fontStyle: "italic" }}>{meta.dragHint}</div>
+        <div style={{ fontSize: 10, color: "#6b6460", fontStyle: "italic", fontFamily: "'IBM Plex Sans', sans-serif" }}>{meta.dragHint}</div>
       )}
     </div>
   );
@@ -2265,6 +2333,31 @@ function StrengthClamps({ geoDims, interactMode }) {
   );
 }
 
+const CAE_COLORMAP_COLORS = [
+  "#ff0000", "#ff4400", "#ff8800", "#ffbb00", "#eeff00",
+  "#88ff00", "#00ff88", "#00eeff", "#0088ff", "#0044ff", "#0000ff"
+];
+
+function CaeColormapLegend({ maxVal }) {
+  const max = maxVal ?? 1000;
+  const min = max * 0.10;
+  const steps = CAE_COLORMAP_COLORS.length;
+  return (
+    <div className="cae-colormap">
+      <div className="cae-colormap-title">STH</div>
+      {CAE_COLORMAP_COLORS.map((color, i) => {
+        const val = max - ((max - min) / (steps - 1)) * i;
+        return (
+          <div key={i} className="cae-colormap-row">
+            <div className="cae-colormap-swatch" style={{ background: color }} />
+            <span className="cae-colormap-val">{val.toFixed(0)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CompareTable({ alloys }) {
   const metrics = [
     { key: "strengthMpa", label: "UTS (MPa)" },
@@ -2274,9 +2367,9 @@ function CompareTable({ alloys }) {
     { key: "meltingPoint", label: "용융점 (°C)" },
     { key: "predictionConfidence", label: "신뢰도 (%)" }
   ];
-  const style = { fontSize: 10, borderCollapse: "collapse", width: "100%" };
-  const tdStyle = { padding: "3px 5px", borderBottom: "1px solid rgba(87,242,255,0.1)", color: "#a8b3c7" };
-  const thStyle = { ...tdStyle, color: "#57f2ff", fontWeight: 600, textAlign: "right" };
+  const style = { fontSize: 10, borderCollapse: "collapse", width: "100%", fontFamily: "'IBM Plex Mono', monospace" };
+  const tdStyle = { padding: "3px 5px", borderBottom: "1px solid #e0ddd8", color: "var(--text-muted)" };
+  const thStyle = { ...tdStyle, color: "var(--accent)", fontWeight: 600, textAlign: "right" };
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={style}>
@@ -2297,7 +2390,7 @@ function CompareTable({ alloys }) {
                   const v = a.prediction?.[key];
                   const isBest = v != null && Number(v) === maxVal && maxVal > 0;
                   return (
-                    <td key={a.id} style={{ ...tdStyle, textAlign: "right", color: isBest ? "var(--success)" : "#eaf2ff", fontWeight: isBest ? 600 : 400 }}>
+                    <td key={a.id} style={{ ...tdStyle, textAlign: "right", color: isBest ? "var(--success)" : "var(--text)", fontWeight: isBest ? 600 : 400 }}>
                       {v != null ? v : "-"}
                     </td>
                   );
@@ -2329,8 +2422,8 @@ function ElementPicker({ existingElements, onAdd }) {
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
-          background: "#0f1928", border: "1px solid rgba(87,242,255,0.3)", borderRadius: 6,
-          padding: 8, display: "flex", flexWrap: "wrap", gap: 4
+          background: "#ffffff", border: "1px solid #d0cdc6", borderRadius: 2,
+          padding: 7, display: "flex", flexWrap: "wrap", gap: 4
         }}>
           {available.map((el) => (
             <button
