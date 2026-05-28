@@ -8,7 +8,7 @@
 
 ```bash
 npm install
-npm start        # 프로덕션 빌드 후 Electron 앱 실행
+npm start    # 프로덕션 빌드 후 Electron 앱 실행
 npm run dev      # 개발 서버 + Electron 동시 실행
 ```
 
