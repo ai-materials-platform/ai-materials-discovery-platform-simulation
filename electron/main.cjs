@@ -4,7 +4,9 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 
 const rootDir = path.resolve(__dirname, "..");
+const predictionRepoDir = process.env.AI_MATERIALS_PLATFORM_DIR || path.resolve(rootDir, "..", "ai-materials-discovery-platform");
 let backendProcess = null;
+let mainWindow = null;
 
 function startBackend() {
   const pythonCommand = process.platform === "win32" ? "python" : "python3";
@@ -62,6 +64,8 @@ function createWindow() {
     console.log("[main] loading:", indexPath);
     win.loadFile(indexPath);
   }
+  mainWindow = win;
+  win.on("closed", () => { mainWindow = null; });
 }
 
 app.whenReady().then(() => {
@@ -82,3 +86,18 @@ app.on("before-quit", () => {
 });
 
 ipcMain.handle("app:getBackendUrl", () => "http://127.0.0.1:8765");
+
+ipcMain.handle("app:close", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+});
+
+ipcMain.handle("app:openPrediction", () => {
+  const pythonCmd = process.platform === "win32" ? "python" : "python3";
+  const child = spawn(pythonCmd, ["main.py"], {
+    cwd: predictionRepoDir,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false
+  });
+  child.unref();
+});

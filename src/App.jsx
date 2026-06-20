@@ -769,6 +769,36 @@ function App() {
   return (
     <div className="app-shell">
       <header className="top-bar panel">
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            title="대시보드로 돌아가기"
+            onClick={() => window.desktopApi?.close()}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              height: 30, padding: "0 10px",
+              background: "transparent", border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: 6, color: "rgba(255,255,255,0.7)",
+              fontSize: 12, fontWeight: 600, cursor: "pointer",
+              letterSpacing: "0.2px"
+            }}
+          >
+            ← 대시보드
+          </button>
+          <button
+            title="물성 예측 앱 열기"
+            onClick={() => window.desktopApi?.openPrediction()}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              height: 30, padding: "0 10px",
+              background: "rgba(99,179,237,0.12)", border: "1px solid rgba(99,179,237,0.3)",
+              borderRadius: 6, color: "#7EC8E3",
+              fontSize: 12, fontWeight: 600, cursor: "pointer"
+            }}
+          >
+            물성 예측 ↗
+          </button>
+          <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+        </div>
         <div className="brand-block">
           <div className="brand-mark"><Boxes size={18} /></div>
           <div>
