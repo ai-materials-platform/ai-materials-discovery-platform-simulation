@@ -982,7 +982,7 @@ function App() {
         <div className="brand-block">
           <div className="brand-mark"><Boxes size={18} /></div>
           <div>
-            <strong>합금 디지털 트윈 시뮬레이션</strong>
+            <strong>MAPS 시뮬레이션</strong>
             <span>조성 비율 기반 물성 예측 및 시편 시뮬레이션</span>
           </div>
         </div>

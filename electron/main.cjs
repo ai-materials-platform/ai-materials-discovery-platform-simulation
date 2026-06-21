@@ -24,7 +24,7 @@ function createWindow() {
     minHeight: 760,
     show: false,
     backgroundColor: "#0B1020",
-    title: "AI 합금 디지털 트윈 시뮬레이션",
+    title: "MAPS",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
