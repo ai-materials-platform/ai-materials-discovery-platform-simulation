@@ -87,6 +87,22 @@ const DEFAULT_PREDICTION = {
 
 const SIGMA_BY_TEST = { elongation: 1.2, bending: 0.4, strength: 0.65, temperature: 1.5 };
 
+const BENDING_FIXTURE_HALF_HEIGHT = 0.72;
+const BENDING_SPECIMEN_GAUGE_RADIUS = 0.295;
+const BENDING_HEAD_REST_OFFSET_Y = 0.56;
+const BENDING_HEAD_BASE_DROP = 0.06;
+const BENDING_HEAD_TIP_LOCAL_Y = -0.45;
+const BENDING_CONTACT_PULL = Math.max(
+  0,
+  BENDING_FIXTURE_HALF_HEIGHT
+    + BENDING_HEAD_REST_OFFSET_Y
+    - BENDING_HEAD_BASE_DROP
+    + BENDING_HEAD_TIP_LOCAL_Y
+    - BENDING_SPECIMEN_GAUGE_RADIUS
+);
+const BENDING_POST_CONTACT_MAX_PULL = 1.05;
+const BENDING_MAX_PULL = BENDING_CONTACT_PULL + BENDING_POST_CONTACT_MAX_PULL;
+
 const SPECIMEN_GRAB_HANDLES = [
   [0.68, 1.3, 0], [-0.68, 1.3, 0], [0, 1.3, 0.68], [0, 1.3, -0.68],
   [0.32, 0, 0], [-0.32, 0, 0], [0, 0, 0.32],
@@ -99,6 +115,94 @@ function heatmapColor(t) {
   if (c < 0.5)  { const s = (c - 0.25) / 0.25; return [0, 0.5 + s * 0.5, 1 - s]; }
   if (c < 0.75) { const s = (c - 0.5) / 0.25; return [s, 1.0, 0]; }
   const s = (c - 0.75) / 0.25; return [1.0, 1 - s, 0];
+}
+
+function mixColor(a, b, t) {
+  const k = Math.max(0, Math.min(1, t));
+  return [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k
+  ];
+}
+
+function smooth01(t) {
+  const k = Math.max(0, Math.min(1, t));
+  return k * k * (3 - 2 * k);
+}
+
+function getYieldRatio(prediction) {
+  const uts = Math.max(120, prediction?.strengthMpa ?? 900);
+  const ys = Math.max(60, prediction?.yieldStressMpa ?? uts * 0.68);
+  return Math.max(0.16, Math.min(0.78, ys / uts));
+}
+
+function deformationStateColor(localRatio, yieldRatio, fractureBias = 0) {
+  const steel = [0.82, 0.84, 0.88];
+  const elastic = [0.28, 0.56, 0.98];
+  const plastic = [1.0, 0.64, 0.16];
+  const fracture = [0.93, 0.18, 0.12];
+  const strain = Math.max(0, Math.min(1.12, localRatio));
+  const elasticBlend = smooth01(Math.min(1, strain / Math.max(0.01, yieldRatio)));
+  let color = mixColor(steel, elastic, elasticBlend);
+
+  if (strain > yieldRatio) {
+    const plasticBlend = smooth01((strain - yieldRatio) / Math.max(0.01, 1 - yieldRatio));
+    color = mixColor(color, plastic, plasticBlend * 0.92);
+    const fractureBlend = smooth01(Math.max(fractureBias, (plasticBlend - 0.72) / 0.28));
+    color = mixColor(color, fracture, fractureBlend);
+  }
+
+  return color;
+}
+
+function naturalStrainColor(localRatio, yieldRatio, fractureBias = 0, bias = "tension") {
+  const steel = [0.82, 0.84, 0.88];
+  const elasticTint = bias === "compression" ? [0.54, 0.66, 0.88] : [0.52, 0.68, 0.92];
+  const plasticTint = [0.97, 0.63, 0.22];
+  const fractureTint = [0.82, 0.20, 0.16];
+  const strain = Math.max(0, Math.min(1.1, localRatio));
+  const elasticBlend = smooth01(Math.min(1, strain / Math.max(0.01, yieldRatio))) * 0.55;
+  let color = mixColor(steel, elasticTint, elasticBlend);
+
+  if (strain > yieldRatio) {
+    const plasticBlend = smooth01((strain - yieldRatio) / Math.max(0.01, 1 - yieldRatio));
+    color = mixColor(color, plasticTint, plasticBlend * 0.78);
+    const fractureBlend = smooth01(Math.max(fractureBias, (plasticBlend - 0.76) / 0.24));
+    color = mixColor(color, fractureTint, fractureBlend * 0.88);
+  }
+
+  return color;
+}
+
+function bendingSurfaceColor({ profile, signedFiberStrain, yieldRatio, localRatio, fractureBias }) {
+  const zone = smooth01(Math.max(0, Math.min(1, profile)));
+  const strainMag = Math.abs(signedFiberStrain);
+  const tension = signedFiberStrain > 0;
+  const severity = Math.max(localRatio * 0.82, strainMag * 0.95, fractureBias * 0.98);
+  const steel = tension ? [0.80, 0.82, 0.86] : [0.76, 0.78, 0.82];
+  const green = [0.20, 0.76, 0.22];
+  const yellow = [0.94, 0.84, 0.16];
+  const orange = [0.98, 0.56, 0.12];
+  const red = [0.86, 0.14, 0.12];
+  const whiteHot = [1.0, 0.96, 0.94];
+
+  let overlay;
+  if (severity < yieldRatio * 0.58) {
+    overlay = steel;
+  } else if (severity < yieldRatio * 0.9) {
+    overlay = mixColor(steel, green, smooth01((severity - yieldRatio * 0.58) / Math.max(0.01, yieldRatio * 0.32)));
+  } else if (severity < yieldRatio + 0.12) {
+    overlay = mixColor(green, yellow, smooth01((severity - yieldRatio * 0.9) / Math.max(0.01, yieldRatio * 0.1 + 0.12)));
+  } else if (severity < 0.82) {
+    overlay = mixColor(yellow, orange, smooth01((severity - (yieldRatio + 0.12)) / Math.max(0.01, 0.82 - (yieldRatio + 0.12))));
+  } else if (severity < 0.98) {
+    overlay = mixColor(orange, red, smooth01((severity - 0.82) / 0.16));
+  } else {
+    overlay = mixColor(red, whiteHot, smooth01((severity - 0.98) / 0.12));
+  }
+
+  return mixColor(steel, overlay, zone * (tension ? 1.0 : 0.86));
 }
 
 function createClosedLoadingHeadGeometry() {
@@ -1567,16 +1671,13 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
   const sc = alloy.scale ?? 1;
 
   if (shape === "specimen") {
-    const bendContactPull = 0.16;
-    const effectiveBendPull = Math.max(0, bendPull - bendContactPull);
-    const bendProgress = Math.max(0, Math.min(1, bendPull / 0.76));
+    const effectiveBendPull = Math.max(0, bendPull - BENDING_CONTACT_PULL);
     return (
       <group position={[offset, 0.32, 0]}>
         {activeTest === "bending" && (
           <BendingFixtures
-            geoDims={{ halfW: 1.2, halfH: 0.72 }}
+            geoDims={{ halfW: 1.2, halfH: BENDING_FIXTURE_HALF_HEIGHT }}
             interactMode={interactMode}
-            bendProgress={bendProgress}
             bendPull={bendPull}
             onBendPullChange={setBendPull}
             orbitEnabledRef={orbitEnabledRef}
@@ -1739,18 +1840,57 @@ function buildSpecimenFractureGeo(deformedArr, srcGeo, isTopPiece, neckY = 0) {
     const oy = deformedArr[i*3+1];
     const oz = deformedArr[i*3+2];
 
-    // Non-planar fracture plane: tilt + low-freq wave
+    // Non-planar fracture plane: tilt + multi-scale waves (rougher = more wavy plane)
     const fracPlaneY = neckY
-      + 0.008 * ox - 0.005 * oz            // slight angular tilt (asymmetric crack)
-      + 0.014 * Math.cos(ox * 9.1 + oz * 7.3 + 0.4)   // low-freq wave
-      + 0.008 * Math.cos(ox * 16.4 - oz * 12.7 + 2.1); // higher-freq undulation
+      + 0.012 * ox - 0.008 * oz                          // slightly steeper tilt
+      + 0.022 * Math.cos(ox * 9.1  + oz * 7.3  + 0.4)   // large-scale wave ↑
+      + 0.016 * Math.cos(ox * 16.4 - oz * 12.7 + 2.1)   // medium wave ↑
+      + 0.012 * Math.cos(ox * 27.8 + oz * 23.4 + 1.7);  // added higher-freq break
 
     const onTop = oy >= fracPlaneY;
 
     if (onTop === isTopPiece) {
-      pos.array[i*3]   = ox;
-      pos.array[i*3+1] = oy;
-      pos.array[i*3+2] = oz;
+      const distFromFrac = Math.abs(oy - fracPlaneY);
+      const nearFrac = Math.exp(-distFromFrac * 22.0);
+      const rXZc = Math.sqrt(ox*ox + oz*oz);
+      let dx = 0, dy = 0, dz = 0;
+
+      if (nearFrac > 0.01) {
+        // Micro surface roughness: ~2% of neckR amplitude
+        dy += (fbm(i, 83.1) * 0.0028 + fbm(i, 167.3) * 0.0016 + (srand(i * 5.13) - 0.5) * 0.002) * nearFrac;
+
+        // Bottom crack marks: lower ~30% arc
+        if (rXZc > 0.002 && oz > rXZc * 0.35) {
+          const phiC  = Math.atan2(ox, oz);
+          const bwC   = Math.min(1, (oz / rXZc - 0.35) / 0.65);
+          const rFrac = Math.min(1, rXZc / (neckR * 1.2));
+          const c1 = Math.max(0, 1 - Math.abs(phiC)        * 10) * rFrac;
+          const c2 = Math.max(0, 1 - Math.abs(phiC + 0.52) * 10) * rFrac;
+          const c3 = Math.max(0, 1 - Math.abs(phiC - 0.52) * 10) * rFrac;
+          dy -= (c1 + c2 * 0.6 + c3 * 0.6) * 0.005 * bwC * nearFrac;
+        }
+
+        if (rXZc > 0.002) {
+          const phi = Math.atan2(oz, ox);
+
+          // Edge Shrink: 3~8% 안쪽 수축, 각도별 약간 비균일 (찢긴 목 형태)
+          const angVar  = 0.012 * Math.sin(phi * 5 + 1.2) + 0.008 * Math.cos(phi * 3 - 0.8);
+          const shrink  = (0.055 + angVar) * nearFrac; // 3.5~7.5% 범위
+          dx -= ox * shrink;
+          dz -= oz * shrink;
+
+          // Edge Tear: 외곽 10~20% 영역만, 단면 반경의 1~2% 이하 요철
+          const rNormC = rXZc / neckR;
+          if (rNormC > 0.80) {
+            const outerW = Math.min(1, (rNormC - 0.80) / 0.20);
+            dy += (fbm(i, 97.3) * 0.0022 + fbm(i, 211.7) * 0.0012) * outerW * nearFrac;
+          }
+        }
+      }
+
+      pos.array[i*3]   = ox + dx;
+      pos.array[i*3+1] = oy + dy;
+      pos.array[i*3+2] = oz + dz;
     } else {
       // Wrong-side vertex: clamp rNorm≤1 (prevents petal artifacts) and fade X,Z
       // toward the Y-axis proportionally to distance from fracture plane.
@@ -1781,14 +1921,29 @@ function buildSpecimenFractureGeo(deformedArr, srcGeo, isTopPiece, neckY = 0) {
           : -(0.010 + lipDepth * 0.85) * fade;
       }
 
-      const coarseY = fbm(i, 3.71)  * 0.028 * fade;
-      const medY    = fbm(i, 8.93)  * 0.012 * fade;
-      const fineY   = fbm(i, 23.17) * 0.005 * fade;
+      const coarseY = fbm(i, 3.71)  * 0.055 * fade;
+      const medY    = fbm(i, 8.93)  * 0.028 * fade;
+      const fineY   = fbm(i, 23.17) * 0.014 * fade;
+      const jitterY = (srand(i * 3.71) - 0.5) * 0.022 * fade;
       const roughXZ = fbm(i, 6.13)  * 0.018 * fade;
       const angleXZ = srand(i * 19 + 41) * Math.PI * 2;
 
+      // Micro surface roughness: ~1.5% of neckR amplitude
+      const microY = (fbm(i, 71.3) * 0.0018 + fbm(i, 149.7) * 0.001) * fade;
+
+      // Bottom crack marks: lower ~30% arc (oz > 0.35*rXZ)
+      let crackY = 0;
+      if (rXZ > 0.002 && oz > rXZ * 0.35) {
+        const phi = Math.atan2(ox, oz);
+        const bw  = Math.min(1, (oz / rXZ - 0.35) / 0.65);
+        const c1  = Math.max(0, 1 - Math.abs(phi)        * 10) * rNorm;
+        const c2  = Math.max(0, 1 - Math.abs(phi + 0.52) * 10) * rNorm;
+        const c3  = Math.max(0, 1 - Math.abs(phi - 0.52) * 10) * rNorm;
+        crackY = -(c1 + c2 * 0.6 + c3 * 0.6) * 0.006 * bw * fade;
+      }
+
       pos.array[i*3]   = (ox + Math.cos(angleXZ) * roughXZ) * xyScale;
-      pos.array[i*3+1] = fracPlaneY + baseY + coarseY + medY + fineY;
+      pos.array[i*3+1] = fracPlaneY + baseY + coarseY + medY + fineY + jitterY + microY + crackY;
       pos.array[i*3+2] = (oz + Math.sin(angleXZ) * roughXZ) * xyScale;
     }
 
@@ -1833,50 +1988,110 @@ function buildBendingFractureGeo(deformedArr, srcGeo, keepPositiveSide) {
   }
 
   const planeY = 0;
-  const bendNeckR = 0.145;
-  const crackHalfWidth = 0.72;
-  const sideSign = keepPositiveSide ? 1 : -1;
+  const sliceHalfWidth = 0.08;
+  let localCenterXSum = 0;
+  let localCenterZSum = 0;
+  let localCenterCount = 0;
+
+  for (let i = 0; i < pos.count; i++) {
+    const sampleX = deformedArr[i * 3];
+    const sampleY = deformedArr[i * 3 + 1];
+    const sampleZ = deformedArr[i * 3 + 2];
+    if (Math.abs(sampleY - planeY) < sliceHalfWidth) {
+      localCenterXSum += sampleX;
+      localCenterZSum += sampleZ;
+      localCenterCount += 1;
+    }
+  }
+
+  const localCenterX = localCenterCount > 0 ? localCenterXSum / localCenterCount : 0;
+  const localCenterZ = localCenterCount > 0 ? localCenterZSum / localCenterCount : 0;
+  let localRadiusX = 0.001;
+  let localRadiusZ = 0.001;
+
+  for (let i = 0; i < pos.count; i++) {
+    const sampleX = deformedArr[i * 3];
+    const sampleY = deformedArr[i * 3 + 1];
+    const sampleZ = deformedArr[i * 3 + 2];
+    if (Math.abs(sampleY - planeY) > sliceHalfWidth) continue;
+    localRadiusX = Math.max(localRadiusX, Math.abs(sampleX - localCenterX));
+    localRadiusZ = Math.max(localRadiusZ, Math.abs(sampleZ - localCenterZ));
+  }
+
+  localRadiusX = Math.max(0.010, localRadiusX);
+  localRadiusZ = Math.max(0.010, localRadiusZ);
+  const localRadius = Math.max(localRadiusX, localRadiusZ);
+  const maxRelief = Math.min(localRadius * 0.07, 0.016);
+  const edgeBand = Math.max(localRadius * 0.18, 0.018);
 
   for (let i = 0; i < pos.count; i++) {
     const ox = deformedArr[i * 3];
     const oy = deformedArr[i * 3 + 1];
     const oz = deformedArr[i * 3 + 2];
     const keep = keepPositiveSide ? oy >= planeY : oy <= planeY;
-    const nearPlane = Math.exp(-(Math.abs(oy - planeY) * 7.5));
-    const bottomBias = Math.max(0, Math.min(1, (ox + crackHalfWidth) / (crackHalfWidth * 2)));
-    const bottomOpen = Math.pow(bottomBias, 1.8);
-    const opening = (0.012 + 0.06 * bottomOpen) * nearPlane;
-    const roughY = (srand(i * 13 + 5) - 0.5) * 0.018 * nearPlane;
-    const roughX = (srand(i * 17 + 11) - 0.5) * 0.014 * nearPlane;
-    const roughZ = (srand(i * 23 + 19) - 0.5) * 0.014 * nearPlane;
-    const crackDrop = bottomOpen * nearPlane * 0.02;
+    const distFromPlane = Math.abs(oy - planeY);
+    const influence = Math.exp(-(distFromPlane * distFromPlane) / (2 * 0.14 * 0.14));
+    const dx = ox - localCenterX;
+    const dz = oz - localCenterZ;
+    const ellip = Math.sqrt((dx * dx) / (localRadiusX * localRadiusX) + (dz * dz) / (localRadiusZ * localRadiusZ));
+    const edgeFactor = smooth01(
+      Math.max(
+        0,
+        Math.min(
+          1,
+          (ellip - (1 - edgeBand / Math.max(localRadius, 1e-3))) /
+          Math.max(0.05, edgeBand / Math.max(localRadius, 1e-3))
+        )
+      )
+    );
+    const roughness = (
+      Math.sin(ox * 22.0 + oz * 7.5) * 0.45 +
+      Math.sin(ox * 41.0 - oz * 15.0) * 0.25 +
+      (srand(i * 31 + 11) - 0.5) * 0.6
+    );
+    const relief = Math.max(-1, Math.min(1, roughness)) * maxRelief * (0.35 + 0.65 * edgeFactor);
+    // Edge Shrink: 각도별 비균일 수축 3~8% (완벽한 원형 단면 깨기)
+    const phi = Math.atan2(dz, dx);
+    const angVar  = 0.018 * Math.sin(phi * 5 + 1.2) + 0.010 * Math.cos(phi * 3 - 0.8);
+    const sideCurl = influence * (0.08 + angVar + 0.15 * edgeFactor);
+    const stretch = influence * (0.003 + 0.006 * edgeFactor);
+    const visibleX = ox - dx * sideCurl * 0.35;
+    const visibleZ = oz - dz * sideCurl * 0.35;
+    const visibleY = oy + (keepPositiveSide ? 1 : -1) * influence * 0.002 - stretch;
 
     if (keep) {
-      pos.array[i * 3] = ox;
-      pos.array[i * 3 + 1] = oy + sideSign * opening;
-      pos.array[i * 3 + 2] = oz;
+      pos.array[i * 3] = visibleX;
+      pos.array[i * 3 + 1] = visibleY;
+      pos.array[i * 3 + 2] = visibleZ;
     } else {
-      const rXZ = Math.sqrt(ox * ox + oz * oz);
-      const radFade = Math.min(1.0, nearPlane * 18.0);
-      // Collapse the hidden side almost to the axis:
-      // max radius ≈ 0.145 * 1.0 * 0.04 = 0.0058
-      const axisScale = (rXZ > bendNeckR ? bendNeckR / rXZ : 1.0) * radFade * radFade * 0.04;
-      pos.array[i * 3] = (ox + roughX) * axisScale;
-      pos.array[i * 3 + 1] = planeY + sideSign * opening + roughY;
-      pos.array[i * 3 + 2] = (oz + roughZ) * axisScale - crackDrop;
+      const clampedEllip = Math.max(ellip, 1e-3);
+      const capScale = clampedEllip > 1 ? 1 / clampedEllip : 1;
+      pos.array[i * 3] = localCenterX + dx * capScale;
+      pos.array[i * 3 + 1] = planeY + (keepPositiveSide ? 1 : -1) * 0.002;
+      pos.array[i * 3 + 2] = localCenterZ + dz * capScale;
+
+      if (edgeFactor > 0.02) {
+        const invLen = 1 / Math.max(1e-4, Math.sqrt(dx * dx + dz * dz));
+        const tx = dx * invLen;
+        const tz = dz * invLen;
+        pos.array[i * 3] += tx * relief;
+        pos.array[i * 3 + 1] += relief * 0.08;
+        pos.array[i * 3 + 2] += tz * relief;
+      }
     }
 
     if (col) {
-      const surfaceBlend = keep ? nearPlane * 0.55 : 1.0;
-      const baseR = 0.08;
-      const baseG = 0.30;
-      const baseB = 0.96;
-      const fracR = 0.62;
-      const fracG = 0.63;
-      const fracB = 0.66;
-      col.array[i * 3] = baseR * (1 - surfaceBlend) + fracR * surfaceBlend;
-      col.array[i * 3 + 1] = baseG * (1 - surfaceBlend) + fracG * surfaceBlend;
-      col.array[i * 3 + 2] = baseB * (1 - surfaceBlend) + fracB * surfaceBlend;
+      const srcR = col.array[i * 3];
+      const srcG = col.array[i * 3 + 1];
+      const srcB = col.array[i * 3 + 2];
+      const stressGlow = Math.min(1, influence * (0.45 + 0.45 * edgeFactor));
+      const surfaceBlend = keep ? influence * (0.10 + 0.16 * edgeFactor) : 0.88;
+      const fracR = 0.48 + 0.08 * edgeFactor + 0.08 * stressGlow;
+      const fracG = 0.49 + 0.05 * edgeFactor;
+      const fracB = 0.52 + 0.03 * edgeFactor;
+      col.array[i * 3] = srcR * (1 - surfaceBlend) + fracR * surfaceBlend;
+      col.array[i * 3 + 1] = srcG * (1 - surfaceBlend) + fracG * surfaceBlend;
+      col.array[i * 3 + 2] = srcB * (1 - surfaceBlend) + fracB * surfaceBlend;
     }
   }
 
@@ -2066,7 +2281,7 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     computeDeform(nextPull);
     const strainPct = (nextPull / Math.max(0.01, fractureThreshold)) * 100;
     onDeformStats?.({ maxStrain: strainPct, grabCount: 1, totalPull: nextPull });
-    if (nextPull >= fractureThreshold && fractureThreshold <= 0.76) triggerFracture(nextPull);
+    if (nextPull >= fractureThreshold) triggerFracture(nextPull);
   }, [activeTest, externalBendPull, fractureState, fractureThreshold]);
 
   // Core physics deformation — per-test vertex update
@@ -2076,6 +2291,7 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     const pos = geo.attributes.position;
     const col = geo.attributes.color;
     const fRatio = Math.min(1, pull / fractureThreshold);
+    const yieldRatio = getYieldRatio(prediction);
     let maxDisp = 0;
 
     if (activeTest === "strength" || activeTest === "elongation") {
@@ -2141,11 +2357,31 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     for (let i = 0; i < pos.count; i++) {
       const cx = pos.array[i*3], cz = pos.array[i*3+2];
       const currentR = Math.sqrt(cx*cx + cz*cz);
+      const dx = pos.array[i*3] - basePositions[i*3];
+      const dy = pos.array[i*3+1] - basePositions[i*3+1];
+      const dz = pos.array[i*3+2] - basePositions[i*3+2];
+      const dispMag = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      const localRatio = Math.min(1.12, dispMag / Math.max(0.01, fractureThreshold));
 
       if (activeTest === "bending") {
-        col.array[i*3] = 0.08;
-        col.array[i*3+1] = 0.30;
-        col.array[i*3+2] = 0.96;
+        const bx = basePositions[i * 3];
+        const by = basePositions[i * 3 + 1];
+        const halfSpan = 1.20;
+        const spanRatio = Math.min(1.0, Math.abs(by) / halfSpan);
+        const profile = Math.max(0, 1.0 - 1.5 * spanRatio * spanRatio + 0.5 * spanRatio * spanRatio * spanRatio);
+        const signedFiberStrain = Math.max(-1.05, Math.min(1.05, (bx / Math.max(gaugeR, 0.01)) * fRatio * profile));
+        const sigmaVM = vonMisesBending(signedFiberStrain, fRatio * profile, maxStressMPa);
+        const stressRatio = Math.min(1.05, sigmaVM / Math.max(1, maxStressMPa));
+        const [r, g, b] = bendingSurfaceColor({
+          profile,
+          signedFiberStrain,
+          yieldRatio,
+          localRatio: Math.max(localRatio * 0.78, stressRatio * 0.9),
+          fractureBias: Math.max(0, stressRatio - 0.9) / 0.15
+        });
+        col.array[i*3] = r;
+        col.array[i*3+1] = g;
+        col.array[i*3+2] = b;
       } else {
         const sigmaVM = vonMisesAtVertex(currentR, gaugeR, fRatio, maxStressMPa);
         const t = Math.min(1, sigmaVM / Math.max(1, maxStressMPa));
@@ -2196,7 +2432,7 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     computeDeform(pull);
     const strainPct = (pull / Math.max(0.01, fractureThreshold)) * 100;
     onDeformStats?.({ maxStrain: strainPct, grabCount: 1, totalPull: pull });
-    if (t >= 0.98 && peakPullRef.current >= fractureThreshold && fractureThreshold <= 0.76) triggerFracture(pull);
+    if (t >= 0.98 && peakPullRef.current >= fractureThreshold) triggerFracture(pull);
   }, [playing, playhead, activeTest, fractureThreshold, fractureState, onBendPullSync]);
 
   function handlePointerDown(e) {
@@ -2289,8 +2525,8 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
           <DraggablePiece
             geometry={fractureState.topGeo}
             matProps={{ ...matProps, side: THREE.DoubleSide }}
-            initOffsetVec={fractureState.bending ? { x: 0, y: 1, z: 0 } : { x: 0, y: 1, z: 0 }}
-            offsetScale={fractureState.bending ? 0.03 : 0.06}
+            initOffsetVec={{ x: 0, y: 1, z: 0 }}
+            offsetScale={fractureState.bending ? 0.08 : 0.09}
             camera={camera}
             orbitEnabledRef={orbitEnabledRef}
             interactMode={interactMode}
@@ -2298,12 +2534,12 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
           <DraggablePiece
             geometry={fractureState.botGeo}
             matProps={{ ...matProps, side: THREE.DoubleSide }}
-            initOffsetVec={fractureState.bending ? { x: 0, y: -1, z: 0 } : { x: 0, y: -1, z: 0 }}
-            offsetScale={fractureState.bending ? 0.03 : 0.06}
+            initOffsetVec={{ x: 0, y: -1, z: 0 }}
+            offsetScale={fractureState.bending ? 0.08 : 0.06}
             camera={camera}
             orbitEnabledRef={orbitEnabledRef}
             interactMode={interactMode}
-            fixed
+            fixed={!fractureState.bending}
           />
         </>
       )}
@@ -2453,6 +2689,14 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     else if (shape === "cube") geo = new THREE.BoxGeometry(1.8, 1.8, 1.8, 8, 8, 8);
     else geo = new THREE.BoxGeometry(2.4, 1.2, 1.6, 10, 5, 7);
     const base = new Float32Array(geo.attributes.position.array);
+    const count = geo.attributes.position.count;
+    const colors = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      colors[i * 3] = 0.82;
+      colors[i * 3 + 1] = 0.84;
+      colors[i * 3 + 2] = 0.88;
+    }
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     return { geometry: geo, basePositions: base };
   }, [shape]);
 
@@ -2488,10 +2732,20 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
     setFractureState(null);
     document.body.style.cursor = "";
     if (!meshRef.current) return;
-    const pos = meshRef.current.geometry.attributes.position;
+    const geo = meshRef.current.geometry;
+    const pos = geo.attributes.position;
     pos.array.set(basePositions);
     pos.needsUpdate = true;
-    meshRef.current.geometry.computeVertexNormals();
+    if (geo.attributes.color) {
+      const col = geo.attributes.color.array;
+      for (let i = 0; i < col.length; i += 3) {
+        col[i] = 0.82;
+        col[i + 1] = 0.84;
+        col[i + 2] = 0.88;
+      }
+      geo.attributes.color.needsUpdate = true;
+    }
+    geo.computeVertexNormals();
   }
 
   useEffect(() => { resetAll(); }, [resetKey]);
@@ -2516,7 +2770,10 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
   // Core vertex computation shared by manual deform and playback
   function computeVertexPositions(pulls) {
     if (!meshRef.current) return 0;
-    const pos = meshRef.current.geometry.attributes.position;
+    const geo = meshRef.current.geometry;
+    const pos = geo.attributes.position;
+    const col = geo.attributes.color;
+    const yieldRatio = getYieldRatio({ strengthMpa, yieldStressMpa: strengthMpa ? strengthMpa * 0.68 : undefined });
     let maxDisp = 0;
 
     if (activeTest === "strength") {
@@ -2594,8 +2851,27 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
       }
     }
 
+    if (col && activeTest === "bending") {
+      for (let i = 0; i < pos.count; i++) {
+        const dx = pos.array[i * 3] - basePositions[i * 3];
+        const dy = pos.array[i * 3 + 1] - basePositions[i * 3 + 1];
+        const dz = pos.array[i * 3 + 2] - basePositions[i * 3 + 2];
+        const dispMag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const localRatio = Math.min(1.12, dispMag / Math.max(0.01, fractureThreshold));
+        const [r, g, b] = deformationStateColor(
+          localRatio,
+          yieldRatio,
+          Math.max(0, localRatio - 0.88) / 0.18
+        );
+        col.array[i * 3] = r;
+        col.array[i * 3 + 1] = g;
+        col.array[i * 3 + 2] = b;
+      }
+      col.needsUpdate = true;
+    }
+
     pos.needsUpdate = true;
-    meshRef.current.geometry.computeVertexNormals();
+    geo.computeVertexNormals();
     return maxDisp;
   }
 
@@ -2789,15 +3065,6 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
         <BendingFixtures
           geoDims={geoDims}
           interactMode={interactMode}
-          bendProgress={Math.max(
-            0,
-            Math.min(
-              1,
-              (grabsRef.current.reduce((s, g) => s + Math.max(0, -g.dy), 0) ||
-                recordedGrabsRef.current.reduce((s, g) => s + Math.max(0, -g.dy), 0)) /
-                0.44
-            )
-          )}
         />
       )}
 
@@ -3009,7 +3276,7 @@ function TestInfoHUD({ activeTest, interactMode, prediction, deformStats }) {
   );
 }
 
-function BendingFixtures({ geoDims, interactMode, bendProgress = 0, bendPull = 0, onBendPullChange, orbitEnabledRef }) {
+function BendingFixtures({ geoDims, interactMode, bendPull = 0, onBendPullChange, orbitEnabledRef }) {
   const hw = geoDims.halfW;
   const hh = geoDims.halfH;
   const supY = -hh - 0.16;
@@ -3017,8 +3284,8 @@ function BendingFixtures({ geoDims, interactMode, bendProgress = 0, bendPull = 0
   const steelMat = { color: "#dce3ea", emissive: "#93a8ba", emissiveIntensity: 0.1, roughness: 0.24, metalness: 0.98 };
   const loadingHeadGeometry = useMemo(() => createClosedLoadingHeadGeometry(), []);
   const loadingHeadCheck = useMemo(() => inspectGeometryClosure(loadingHeadGeometry), [loadingHeadGeometry]);
-  const headDrop = 0.06 + bendProgress * 0.34;
-  const maxBendPull = 0.76;
+  const headDrop = BENDING_HEAD_BASE_DROP + bendPull;
+  const maxBendPull = BENDING_MAX_PULL;
 
   useEffect(() => () => loadingHeadGeometry.dispose(), [loadingHeadGeometry]);
 
@@ -3084,7 +3351,7 @@ function BendingFixtures({ geoDims, interactMode, bendProgress = 0, bendPull = 0
         <meshStandardMaterial {...fixtureMat} />
       </mesh>
       {interactMode === "deform" && (
-        <group position={[0, hh + 0.62 - headDrop, 0]}>
+        <group position={[0, hh + BENDING_HEAD_REST_OFFSET_Y - headDrop, 0]}>
           <mesh position={[0, 0.96, 0]}>
             <boxGeometry args={[0.74, 0.16, 0.54]} />
             <meshStandardMaterial color="#6b7280" roughness={0.3} metalness={0.9} />
