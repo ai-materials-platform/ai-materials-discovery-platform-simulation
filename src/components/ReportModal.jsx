@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { predictPhases, classifyFracture, estimateHardness, estimateKIC } from "../lib/physics.js";
 
 // ── Mini stress-strain SVG for the report ──────────────────────────────────
@@ -208,12 +209,13 @@ export default function ReportModal({
   const [saveMsg, setSaveMsg] = useState("");
 
   const handlePrint = useCallback(async () => {
-    // Electron desktop: use printToPDF → save dialog
     if (window.desktopApi?.savePDF) {
       setSaving(true);
       setSaveMsg("");
       try {
-        const result = await window.desktopApi.savePDF();
+        // Serialize only the report content (white bg, no 3D canvas/dark theme)
+        const contentHtml = printAreaRef.current?.innerHTML ?? "";
+        const result = await window.desktopApi.savePDF({ contentHtml });
         if (result?.success) {
           setSaveMsg(`저장 완료: ${result.filePath?.split(/[\\/]/).pop() ?? "파일"}`);
         } else if (!result?.canceled) {
@@ -225,7 +227,6 @@ export default function ReportModal({
         setSaving(false);
       }
     } else {
-      // 브라우저 fallback
       window.print();
     }
   }, []);
@@ -249,7 +250,7 @@ export default function ReportModal({
   const h2s = { fontSize: 13, fontWeight: 700, color: "#1a5fa8", borderBottom: "2px solid #1a5fa8",
                 paddingBottom: 4, marginBottom: 10, marginTop: 0 };
 
-  return (
+  return createPortal(
     <>
       {/* ── Backdrop ── */}
       <div
@@ -512,9 +513,9 @@ export default function ReportModal({
               )}
             </section>
 
-            {/* ── 6. Von Mises 응력장 ── */}
+            {/* ── 6. 응력 분포 분석 ── */}
             <section style={sec}>
-              <h2 style={h2s}>6. Von Mises 응력 분석</h2>
+              <h2 style={h2s}>6. 응력 분포 분석</h2>
               <table style={tbl}>
                 <thead><tr>
                   <th style={th}>항목</th>
@@ -523,14 +524,14 @@ export default function ReportModal({
                 </tr></thead>
                 <tbody>
                   <tr>
-                    <td style={td}>최대 Von Mises 응력</td>
+                    <td style={td}>최대 등가 응력</td>
                     <td style={tdR}>{(simulation?.result?.maxStressMpa ?? UTS).toFixed(0)} MPa</td>
-                    <td style={{ ...td, fontSize: 10, color: "#555" }}>시편 내부에서 가장 큰 응력이 걸리는 지점의 등가 응력값 — 3D 응력 상태를 하나의 숫자로 표현</td>
+                    <td style={{ ...td, fontSize: 10, color: "#555" }}>시편 내부에서 응력이 가장 크게 집중된 지점의 등가 응력값 — 3D 응력 상태를 하나의 숫자로 표현</td>
                   </tr>
                   <tr>
                     <td style={td}>항복 응력 (YS)</td>
                     <td style={tdR}>{YS.toFixed(0)} MPa</td>
-                    <td style={{ ...td, fontSize: 10, color: "#555" }}>Von Mises 응력이 이 값을 넘으면 재료가 영구 변형됨</td>
+                    <td style={{ ...td, fontSize: 10, color: "#555" }}>이 값을 초과하는 응력이 가해지면 재료가 영구 변형됨</td>
                   </tr>
                   <tr>
                     <td style={td}>안전계수 (SF)</td>
@@ -641,6 +642,7 @@ export default function ReportModal({
           </div>
         </div>
       </div>
-    </>
+    </>,
+    document.body
   );
 }

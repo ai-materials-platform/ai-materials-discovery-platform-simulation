@@ -100,6 +100,71 @@ function heatmapColor(t) {
   const s = (c - 0.75) / 0.25; return [1.0, 1 - s, 0];
 }
 
+function createClosedLoadingHeadGeometry() {
+  const profile = [
+    new THREE.Vector2(0.0, 0.76),
+    new THREE.Vector2(0.28, 0.76),
+    new THREE.Vector2(0.28, 0.58),
+    new THREE.Vector2(0.255, 0.46),
+    new THREE.Vector2(0.225, 0.30),
+    new THREE.Vector2(0.19, 0.12),
+    new THREE.Vector2(0.145, -0.04),
+    new THREE.Vector2(0.10, -0.18),
+    new THREE.Vector2(0.055, -0.30),
+    new THREE.Vector2(0.018, -0.40),
+    new THREE.Vector2(0.0, -0.45)
+  ];
+  const geometry = new THREE.LatheGeometry(profile, 96, 0, Math.PI * 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function inspectGeometryClosure(geometry) {
+  const pos = geometry.attributes.position;
+  if (!pos) return { boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, hasOpenEdges: false, missingCap: false };
+  const indexArray = geometry.index ? geometry.index.array : Array.from({ length: pos.count }, (_, i) => i);
+  const canonicalIds = new Map();
+  const vertexIds = new Array(pos.count);
+  let nextId = 0;
+  const edgeCounts = new Map();
+
+  for (let i = 0; i < pos.count; i++) {
+    const key = [
+      Math.round(pos.getX(i) * 1e5),
+      Math.round(pos.getY(i) * 1e5),
+      Math.round(pos.getZ(i) * 1e5)
+    ].join("|");
+    if (!canonicalIds.has(key)) canonicalIds.set(key, nextId++);
+    vertexIds[i] = canonicalIds.get(key);
+  }
+
+  for (let i = 0; i < indexArray.length; i += 3) {
+    const tri = [
+      vertexIds[indexArray[i]],
+      vertexIds[indexArray[i + 1]],
+      vertexIds[indexArray[i + 2]]
+    ];
+    for (const [a, b] of [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]]) {
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+    }
+  }
+
+  let boundaryEdgeCount = 0;
+  let nonManifoldEdgeCount = 0;
+  for (const count of edgeCounts.values()) {
+    if (count === 1) boundaryEdgeCount += 1;
+    else if (count > 2) nonManifoldEdgeCount += 1;
+  }
+
+  return {
+    boundaryEdgeCount,
+    nonManifoldEdgeCount,
+    hasOpenEdges: boundaryEdgeCount > 0,
+    missingCap: boundaryEdgeCount > 0
+  };
+}
+
 function nowTime() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
 }
@@ -381,6 +446,8 @@ function App() {
   });
   const [showReport, setShowReport] = useState(false);
   const [reportImageUrl, setReportImageUrl] = useState(null);
+  const [newAlloyDialog, setNewAlloyDialog] = useState(false);
+  const [newAlloyName, setNewAlloyName] = useState("");
   const didInitialPrediction = useRef(false);
   const fileInputRef = useRef(null);
 
@@ -633,9 +700,16 @@ function App() {
   }
 
   function createNewAlloy() {
+    const defaultName = `조성 기반 합금 ${alloys.length + 1}`;
+    setNewAlloyName(defaultName);
+    setNewAlloyDialog(true);
+  }
+
+  function confirmNewAlloy() {
+    const defaultName = `조성 기반 합금 ${alloys.length + 1}`;
     const alloy = {
       id: `custom-${Date.now()}`,
-      name: `조성 기반 합금 ${alloys.length + 1}`,
+      name: newAlloyName.trim() || defaultName,
       category: "자동 생성",
       composition,
       densityScale,
@@ -647,7 +721,8 @@ function App() {
     };
     setAlloys((items) => [alloy, ...items]);
     setSelectedId(alloy.id);
-    addLog("새 합금 생성: 조성 비율 입력값만 사용");
+    addLog(`새 합금 생성: ${alloy.name}`);
+    setNewAlloyDialog(false);
   }
 
   function saveState() {
@@ -805,6 +880,58 @@ function App() {
 
   return (
     <div className="app-shell">
+      {/* ── 새 합금 이름 입력 다이얼로그 ── */}
+      {newAlloyDialog && (
+        <div
+          onClick={() => setNewAlloyDialog(false)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center"
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: "#fff", borderRadius: 8, padding: "24px 28px", width: 340,
+              boxShadow: "0 8px 32px rgba(0,0,0,0.28)",
+              fontFamily: "'IBM Plex Sans','Noto Sans KR',sans-serif"
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: "#1a5fa8" }}>
+              새 합금 이름
+            </div>
+            <input
+              autoFocus
+              value={newAlloyName}
+              onChange={e => setNewAlloyName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") confirmNewAlloy(); if (e.key === "Escape") setNewAlloyDialog(false); }}
+              style={{
+                width: "100%", padding: "8px 10px", border: "1px solid #ccc",
+                borderRadius: 4, fontSize: 13, outline: "none", marginBottom: 16,
+                fontFamily: "inherit"
+              }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setNewAlloyDialog(false)}
+                style={{
+                  padding: "7px 16px", border: "1px solid #ccc", borderRadius: 4,
+                  background: "#f5f5f5", cursor: "pointer", fontSize: 12
+                }}
+              >취소</button>
+              <button
+                onClick={confirmNewAlloy}
+                style={{
+                  padding: "7px 16px", border: "none", borderRadius: 4,
+                  background: "#1a5fa8", color: "#fff", cursor: "pointer",
+                  fontSize: 12, fontWeight: 700
+                }}
+              >추가</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showReport && (
         <ReportModal
           alloyName={selectedAlloy?.name}
@@ -1323,11 +1450,20 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
   const group = useRef();
   const [deform, setDeform] = useState({ x: 1, y: 1, z: 1 });
   const [fractured, setFractured] = useState(false);
+  const [localDeformStats, setLocalDeformStats] = useState({ maxStrain: 0, grabCount: 0, totalPull: 0 });
+  const [bendPull, setBendPull] = useState(0);
 
   useEffect(() => {
     setDeform({ x: 1, y: 1, z: 1 });
     setFractured(false);
+    setLocalDeformStats({ maxStrain: 0, grabCount: 0, totalPull: 0 });
+    setBendPull(0);
   }, [resetKey]);
+
+  function handleLocalDeformStats(nextStats) {
+    setLocalDeformStats(nextStats);
+    onDeformStats?.(nextStats);
+  }
 
   const points = useMemo(() => {
     const nodes = [];
@@ -1410,21 +1546,38 @@ function AlloyModel({ alloy, selected, mode, activeTest, prediction, simulation,
   const sc = alloy.scale ?? 1;
 
   if (shape === "specimen") {
+    const bendContactPull = 0.16;
+    const effectiveBendPull = Math.max(0, bendPull - bendContactPull);
+    const bendProgress = Math.max(0, Math.min(1, bendPull / 0.76));
     return (
       <group position={[offset, 0.32, 0]}>
-        <DeformableMesh
-          mode={mode}
-          activeTest={activeTest}
-          scale={sc}
-          interactMode={interactMode}
-          orbitEnabledRef={orbitEnabledRef}
-          onSelect={onSelect}
-          resetKey={resetKey}
-          onDeformStats={onDeformStats}
-          playing={playing}
-          playhead={playhead}
-          prediction={prediction}
-        />
+        {activeTest === "bending" && (
+          <BendingFixtures
+            geoDims={{ halfW: 1.2, halfH: 0.72 }}
+            interactMode={interactMode}
+            bendProgress={bendProgress}
+            bendPull={bendPull}
+            onBendPullChange={setBendPull}
+            orbitEnabledRef={orbitEnabledRef}
+          />
+        )}
+        <group rotation={[0, 0, activeTest === "bending" ? -Math.PI / 2 : 0]}>
+          <DeformableMesh
+            mode={mode}
+            activeTest={activeTest}
+            scale={sc}
+            interactMode={interactMode}
+            orbitEnabledRef={orbitEnabledRef}
+            onSelect={onSelect}
+            resetKey={resetKey}
+            onDeformStats={handleLocalDeformStats}
+            playing={playing}
+            playhead={playhead}
+            prediction={prediction}
+            externalBendPull={activeTest === "bending" ? effectiveBendPull : null}
+            onBendPullSync={setBendPull}
+          />
+        </group>
       </group>
     );
   }
@@ -1530,69 +1683,115 @@ function HeatParticles({ active, intensity }) {
 }
 
 // ─── Cup-and-cone fracture geometry for dogbone specimen ──────────────────────
+// Physically based: fibrous dimple-rupture center + 45° shear lip outer zone
 // isTopPiece=true  → upper fragment (cup  surface faces down)
 // isTopPiece=false → lower fragment (cone surface faces up)
-function buildSpecimenFractureGeo(deformedArr, srcGeo, isTopPiece) {
+function buildSpecimenFractureGeo(deformedArr, srcGeo, isTopPiece, neckY = 0) {
   const geo = srcGeo.clone();
   const pos = geo.attributes.position;
   const col = geo.attributes.color;
 
-  function seededRand(seed) {
+  // Seeded deterministic noise — same seed → same distortion on both pieces
+  function srand(seed) {
     const s = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
     return s - Math.floor(s);
   }
+  // Fractal Brownian Motion: multi-octave roughness for dimple texture
+  function fbm(i, scale) {
+    return (srand(i * scale + 1)        - 0.5) * 1.00
+         + (srand(i * scale * 2.17 + 19) - 0.5) * 0.45
+         + (srand(i * scale * 4.73 + 53) - 0.5) * 0.18
+         + (srand(i * scale * 9.31 + 97) - 0.5) * 0.07;
+  }
 
-  const gaugeR = 0.34; // nominal gauge-section radius at fracture plane (y≈0)
+  // After severe necking at fracture, gauge radius is ~44% of original (0.295 → ≈0.13)
+  // Use 0.145 to include a thin shoulder of transition vertices
+  const neckR     = 0.145;
+  const fiberFrac = 0.58;  // inner 58% of radius = fibrous dimple zone
+  // Shear lip occupies outer 42% → 45° slope width ≈ neckR*(1-fiberFrac) = 0.061
+  const shearDepthMax = neckR * (1.0 - fiberFrac); // ≈0.061, true 45° geometry
 
+  // Slight tilt + low-frequency wave: asymmetric crack propagation, not a perfect flat cut
+  // Both pieces share the same fracture plane so they interlock
   for (let i = 0; i < pos.count; i++) {
-    const ox = deformedArr[i * 3];
-    const oy = deformedArr[i * 3 + 1];
-    const oz = deformedArr[i * 3 + 2];
+    const ox = deformedArr[i*3];
+    const oy = deformedArr[i*3+1];
+    const oz = deformedArr[i*3+2];
 
-    const onTop = oy >= 0;
+    // Non-planar fracture plane: tilt + low-freq wave
+    const fracPlaneY = neckY
+      + 0.008 * ox - 0.005 * oz            // slight angular tilt (asymmetric crack)
+      + 0.014 * Math.cos(ox * 9.1 + oz * 7.3 + 0.4)   // low-freq wave
+      + 0.008 * Math.cos(ox * 16.4 - oz * 12.7 + 2.1); // higher-freq undulation
+
+    const onTop = oy >= fracPlaneY;
+
     if (onTop === isTopPiece) {
-      // Vertex is on the correct side — keep position, apply fracture-surface colour
-      pos.array[i * 3]     = ox;
-      pos.array[i * 3 + 1] = oy;
-      pos.array[i * 3 + 2] = oz;
+      pos.array[i*3]   = ox;
+      pos.array[i*3+1] = oy;
+      pos.array[i*3+2] = oz;
     } else {
-      // Vertex is on the far side — shape it into cup or cone fracture surface
-      const distFromPlane = Math.abs(oy);
-      const fade = Math.exp(-distFromPlane * 5.0); // sharp decay away from fracture plane
+      // Wrong-side vertex: clamp rNorm≤1 (prevents petal artifacts) and fade X,Z
+      // toward the Y-axis proportionally to distance from fracture plane.
+      // Result: far-from-plane vertices converge to (0, fracPlaneY, 0) → degenerate
+      // triangles with zero screen area → invisible, no disc.
+      const rXZ   = Math.sqrt(ox*ox + oz*oz);
+      const rNorm = Math.min(1.0, rXZ / neckR); // cap at 1 → no runaway lipDepth
 
-      const rXZ  = Math.sqrt(ox * ox + oz * oz);
-      const rNorm = Math.min(1.0, rXZ / gaugeR); // 0 = axis centre, 1 = outer rim
+      const distFromPlane = Math.abs(oy - fracPlaneY);
+      const fade = Math.exp(-distFromPlane * 10.0);
 
-      // Cup  (top piece, viewed from below): concave bowl — rim lower, centre raised
-      // Cone (bottom piece, viewed from above): convex cone — centre raised to a point
-      let surfY;
-      if (isTopPiece) {
-        // Cup: outer ring dips down (-), centre stays near 0
-        surfY = -(rNorm * 0.12 + (1.0 - rNorm) * 0.03) * fade;
+      // Collapse wrong-side vertices tightly toward the Y-axis → disc becomes invisible.
+      // radFade² sharpens the falloff; 0.04 caps max XZ radius at ~0.006 units.
+      const radFade = Math.min(1.0, fade * 25.0);
+      const xyScale = (rXZ > neckR ? neckR / rXZ : 1.0) * radFade * radFade * 0.04;
+
+      let baseY;
+      if (rNorm <= fiberFrac) {
+        const rIn = rNorm / fiberFrac;
+        baseY = isTopPiece
+          ? -(0.008 + rIn * rIn * 0.018) * fade
+          : +(0.048 * Math.pow(1.0 - rIn, 1.4)) * fade;
       } else {
-        // Cone: centre rises up (+), outer ring near 0
-        surfY = +((1.0 - rNorm) * 0.18 + rNorm * 0.02) * fade;
+        const rShear   = (rNorm - fiberFrac) / (1.0 - fiberFrac);
+        const lipDepth = shearDepthMax * rShear * rShear;
+        baseY = isTopPiece
+          ? -(0.026 + lipDepth) * fade
+          : -(0.010 + lipDepth * 0.85) * fade;
       }
 
-      // Deterministic roughness matching between the two surfaces
-      const roughY  = (seededRand(i * 3)      - 0.5) * 0.10 * fade;
-      const roughXZ = (seededRand(i * 7  + 1) - 0.5) * 0.08 * fade;
-      const angle   =  seededRand(i * 13 + 2) * Math.PI * 2;
+      const coarseY = fbm(i, 3.71)  * 0.028 * fade;
+      const medY    = fbm(i, 8.93)  * 0.012 * fade;
+      const fineY   = fbm(i, 23.17) * 0.005 * fade;
+      const roughXZ = fbm(i, 6.13)  * 0.018 * fade;
+      const angleXZ = srand(i * 19 + 41) * Math.PI * 2;
 
-      pos.array[i * 3]     = ox + Math.cos(angle) * roughXZ * 0.12;
-      pos.array[i * 3 + 1] = surfY + roughY;
-      pos.array[i * 3 + 2] = oz + Math.sin(angle) * roughXZ * 0.12;
+      pos.array[i*3]   = (ox + Math.cos(angleXZ) * roughXZ) * xyScale;
+      pos.array[i*3+1] = fracPlaneY + baseY + coarseY + medY + fineY;
+      pos.array[i*3+2] = (oz + Math.sin(angleXZ) * roughXZ) * xyScale;
     }
 
-    // Fracture-surface colour: silvery-grey with a slight warm tint near rim (shear lip)
-    const rXZLocal = Math.sqrt(pos.array[i*3]*pos.array[i*3] + pos.array[i*3+2]*pos.array[i*3+2]);
-    const rRim = Math.min(1, rXZLocal / gaugeR);
-    const grey = 0.72 + rRim * 0.12;
-    const warm = rRim * 0.08;
+    // ── Fracture-surface colour ──────────────────────────────────────────────
+    const rx = pos.array[i*3], rz = pos.array[i*3+2];
+    const rLoc = Math.min(1.0, Math.sqrt(rx*rx + rz*rz) / neckR);
     if (col) {
-      col.array[i * 3]     = grey + warm;
-      col.array[i * 3 + 1] = grey;
-      col.array[i * 3 + 2] = grey - warm * 0.5;
+      if (rLoc <= fiberFrac) {
+        // Fibrous dimple zone: dark matte grey (micro-void coalescence surface)
+        // Slight speckling from individual dimple facets
+        const dimple = srand(i * 7 + 3) * 0.20;
+        const base   = 0.38 + dimple;
+        col.array[i*3]   = base + 0.03;  // faint warm tint (oxidised fresh metal)
+        col.array[i*3+1] = base;
+        col.array[i*3+2] = base - 0.02;
+      } else {
+        // Shear lip: bright cold-silver metallic (shear creates mirror-like facets)
+        const t = (rLoc - fiberFrac) / (1.0 - fiberFrac); // 0→1 across shear zone
+        // Gradient: inner shear lip slightly darker → outer rim brightest
+        const bright = 0.68 + t * 0.24;
+        col.array[i*3]   = bright + 0.01;
+        col.array[i*3+1] = bright + 0.01;
+        col.array[i*3+2] = bright + 0.05; // slight cool/blue-silver tint on fresh shear
+      }
     }
   }
 
@@ -1602,7 +1801,71 @@ function buildSpecimenFractureGeo(deformedArr, srcGeo, isTopPiece) {
   return geo;
 }
 
-function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats, playing, playhead, prediction }) {
+function buildBendingFractureGeo(deformedArr, srcGeo, keepPositiveSide) {
+  const geo = srcGeo.clone();
+  const pos = geo.attributes.position;
+  const col = geo.attributes.color;
+
+  function srand(seed) {
+    const s = Math.sin(seed * 91.7 + 17.3) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  const planeY = 0;
+  const bendNeckR = 0.145;
+  const crackHalfWidth = 0.72;
+  const sideSign = keepPositiveSide ? 1 : -1;
+
+  for (let i = 0; i < pos.count; i++) {
+    const ox = deformedArr[i * 3];
+    const oy = deformedArr[i * 3 + 1];
+    const oz = deformedArr[i * 3 + 2];
+    const keep = keepPositiveSide ? oy >= planeY : oy <= planeY;
+    const nearPlane = Math.exp(-(Math.abs(oy - planeY) * 7.5));
+    const bottomBias = Math.max(0, Math.min(1, (ox + crackHalfWidth) / (crackHalfWidth * 2)));
+    const bottomOpen = Math.pow(bottomBias, 1.8);
+    const opening = (0.012 + 0.06 * bottomOpen) * nearPlane;
+    const roughY = (srand(i * 13 + 5) - 0.5) * 0.018 * nearPlane;
+    const roughX = (srand(i * 17 + 11) - 0.5) * 0.014 * nearPlane;
+    const roughZ = (srand(i * 23 + 19) - 0.5) * 0.014 * nearPlane;
+    const crackDrop = bottomOpen * nearPlane * 0.02;
+
+    if (keep) {
+      pos.array[i * 3] = ox;
+      pos.array[i * 3 + 1] = oy + sideSign * opening;
+      pos.array[i * 3 + 2] = oz;
+    } else {
+      const rXZ = Math.sqrt(ox * ox + oz * oz);
+      const radFade = Math.min(1.0, nearPlane * 18.0);
+      // Collapse the hidden side almost to the axis:
+      // max radius ≈ 0.145 * 1.0 * 0.04 = 0.0058
+      const axisScale = (rXZ > bendNeckR ? bendNeckR / rXZ : 1.0) * radFade * radFade * 0.04;
+      pos.array[i * 3] = (ox + roughX) * axisScale;
+      pos.array[i * 3 + 1] = planeY + sideSign * opening + roughY;
+      pos.array[i * 3 + 2] = (oz + roughZ) * axisScale - crackDrop;
+    }
+
+    if (col) {
+      const surfaceBlend = keep ? nearPlane * 0.55 : 1.0;
+      const baseR = 0.08;
+      const baseG = 0.30;
+      const baseB = 0.96;
+      const fracR = 0.62;
+      const fracG = 0.63;
+      const fracB = 0.66;
+      col.array[i * 3] = baseR * (1 - surfaceBlend) + fracR * surfaceBlend;
+      col.array[i * 3 + 1] = baseG * (1 - surfaceBlend) + fracG * surfaceBlend;
+      col.array[i * 3 + 2] = baseB * (1 - surfaceBlend) + fracB * surfaceBlend;
+    }
+  }
+
+  pos.needsUpdate = true;
+  if (col) col.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef, onSelect, resetKey, onDeformStats, playing, playhead, prediction, externalBendPull = null, onBendPullSync }) {
   const meshRef = useRef();
   const fractureRef  = useRef(false);
   const totalPullRef = useRef(0);
@@ -1610,48 +1873,131 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
   const [fractureState, setFractureState] = useState(null);
   const { camera } = useThree();
 
-  // ASTM E8 dogbone geometry — LatheGeometry along Y axis (high-res PBR profile)
-  const { geometry, basePositions, gripRadius, gripTopY, gripBotY } = useMemo(() => {
-    const pts = [];
-    const N = 120;
-    const totalH = 3.2;
-    const gripR  = 0.72;
-    const gaugeR = 0.295;
-    // ASTM E8 proportions: grip 30% each end, shoulder 20% each, gauge 40% center
-    const gripA    = 0.70; // |a| above this → grip cylinder
-    const shoulderA = 0.42; // |a| below this → gauge cylinder
+  // ASTM E8 Round Dog-Bone geometry — watertight closed mesh, C2 shoulder fillets
+  const { geometry, basePositions, ringData } = useMemo(() => {
+    // ── Specimen dimensions ────────────────────────────────────────────────────
+    const totalH  = 3.2;
+    const gripEnd = totalH / 2;   // ±1.6 — absolute tip of each grip end
+    const gaugeR  = 0.295;        // gauge-section radius (kept for deformation compat.)
+    const gripR   = 0.72;         // grip-section radius (~2.4× gauge, ASTM E8 range)
+    const GAUGE_Y = 0.672;        // gauge/shoulder boundary
+    const GRIP_Y  = 1.12;         // shoulder/grip boundary
 
-    for (let i = 0; i < N; i++) {
-      const t = i / (N - 1);
-      const y = (t - 0.5) * totalH;
-      const a = Math.abs(t - 0.5) * 2; // 0 at center, 1 at ends
-      let r;
-      if (a >= gripA) {
-        // Grip cylinder with tiny chamfer at very tip
-        const chamfer = Math.min(1, (a - gripA) / 0.04);
-        r = gripR - chamfer * 0.015; // slight chamfer taper
-      } else if (a >= shoulderA) {
-        // Shoulder fillet — smooth cubic Hermite (S-curve)
-        const s = (a - shoulderA) / (gripA - shoulderA); // 0→1
-        const sc = s * s * (3 - 2 * s); // smoothstep
-        r = gaugeR + (gripR - gaugeR) * sc;
-      } else {
-        r = gaugeR; // Gauge cylinder
-      }
-      pts.push(new THREE.Vector2(r, y));
+    // Quintic smootherstep — C2 continuous (zero 1st AND 2nd derivative at t=0,1)
+    const quintic = t => t * t * t * (10 + t * (6 * t - 15));
+
+    const N_grip     = 8;   // profile points per grip cylinder (excluding endpoints)
+    const N_shoulder = 40;  // profile points per shoulder fillet
+    const N_gauge    = 28;  // profile points in gauge cylinder (excluding endpoints)
+
+    const pts = [];
+
+    // ── Bottom flat end-cap (watertight closure) ─────────────────────────────
+    pts.push(new THREE.Vector2(0,     -gripEnd));   // axis → fan triangles → flat disc
+    pts.push(new THREE.Vector2(gripR, -gripEnd));   // cap rim  (same Y → flat face)
+
+    // ── Bottom grip cylinder ──────────────────────────────────────────────────
+    for (let i = 1; i <= N_grip; i++)
+      pts.push(new THREE.Vector2(gripR, -gripEnd + (gripEnd - GRIP_Y) * i / N_grip));
+    // ends at (gripR, -GRIP_Y)
+
+    // ── Bottom shoulder: gripR → gaugeR, quintic C2 fillet ───────────────────
+    for (let i = 1; i <= N_shoulder; i++) {
+      const t = i / N_shoulder;
+      pts.push(new THREE.Vector2(
+        gripR  + (gaugeR - gripR)  * quintic(t),
+        -GRIP_Y + (GRIP_Y - GAUGE_Y) * t
+      ));
     }
-    const geo = new THREE.LatheGeometry(pts, 128); // 128 radial segments
+    // ends at (gaugeR, -GAUGE_Y)
+
+    // ── Gauge section (constant gaugeR) ───────────────────────────────────────
+    for (let i = 1; i < N_gauge; i++)
+      pts.push(new THREE.Vector2(gaugeR, -GAUGE_Y + 2 * GAUGE_Y * i / N_gauge));
+    pts.push(new THREE.Vector2(gaugeR, +GAUGE_Y));
+    // ends at (gaugeR, +GAUGE_Y)
+
+    // ── Top shoulder: gaugeR → gripR, quintic C2 fillet ──────────────────────
+    for (let i = 1; i <= N_shoulder; i++) {
+      const t = i / N_shoulder;
+      pts.push(new THREE.Vector2(
+        gaugeR + (gripR - gaugeR)  * quintic(t),
+        GAUGE_Y + (GRIP_Y - GAUGE_Y) * t
+      ));
+    }
+    // ends at (gripR, +GRIP_Y)
+
+    // ── Top grip cylinder ─────────────────────────────────────────────────────
+    for (let i = 1; i <= N_grip; i++)
+      pts.push(new THREE.Vector2(gripR, GRIP_Y + (gripEnd - GRIP_Y) * i / N_grip));
+    // ends at (gripR, +gripEnd)
+
+    // ── Top flat end-cap ──────────────────────────────────────────────────────
+    pts.push(new THREE.Vector2(0, +gripEnd));       // axis → closes the mesh
+
+    // ─────────────────────────────────────────────────────────────────────────
+    const geo = new THREE.LatheGeometry(pts, 128);
     const base = new Float32Array(geo.attributes.position.array);
     const cnt = geo.attributes.position.count;
     const col = new Float32Array(cnt * 3);
-    // Default: bright steel silver
     for (let i = 0; i < cnt; i++) { col[i*3] = 0.82; col[i*3+1] = 0.82; col[i*3+2] = 0.85; }
     geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+
+    // ── Precompute ring structure once (reused every frame in computeDeform) ─
+    // GAUGE_Y / GRIP_Y defined above; match the profile boundaries exactly.
+    const gProfFn = (absY) => {
+      if (absY <= GAUGE_Y) return 1.0;
+      if (absY >= GRIP_Y)  return 0.0;
+      const s = (absY - GAUGE_Y) / (GRIP_Y - GAUGE_Y);
+      return 1.0 - s * s * (3 - 2 * s);
+    };
+
+    const ringByKey = new Map();
+    for (let i = 0; i < cnt; i++) {
+      const by  = base[i * 3 + 1];
+      const key = Math.round(by * 100000);
+      if (!ringByKey.has(key)) ringByKey.set(key, { by, indices: [] });
+      ringByKey.get(key).indices.push(i);
+    }
+    const rings = Array.from(ringByKey.values()).sort((ra, rb) => ra.by - rb.by);
+    const nR = rings.length;
+
+    // Center ring = minimum |by|
+    let ci = 0, minAbsY = Infinity;
+    for (let r = 0; r < nR; r++) {
+      const ay = Math.abs(rings[r].by);
+      if (ay < minAbsY) { minAbsY = ay; ci = r; }
+    }
+
+    // Cumulative axial multiplier per ring — multiply by pullScale at runtime to get axial
+    const cumulAxMult = new Float32Array(nR);
+    cumulAxMult[ci] = 0;
+    for (let r = ci + 1; r < nR; r++) {
+      const dy   = rings[r].by - rings[r-1].by;
+      const midY = (rings[r].by + rings[r-1].by) * 0.5;
+      cumulAxMult[r] = cumulAxMult[r-1] + dy * gProfFn(Math.abs(midY));
+    }
+    for (let r = ci - 1; r >= 0; r--) {
+      const dy   = rings[r].by - rings[r+1].by;
+      const midY = (rings[r].by + rings[r+1].by) * 0.5;
+      cumulAxMult[r] = cumulAxMult[r+1] + dy * gProfFn(Math.abs(midY));
+    }
+
+    // Per-ring necking constants (Gaussian kernels are time-invariant)
+    const rGp = new Float32Array(nR); // gaugeProfile value
+    const rNK = new Float32Array(nR); // diffuse necking kernel
+    const rLK = new Float32Array(nR); // local necking kernel
+    for (let r = 0; r < nR; r++) {
+      const by = rings[r].by;
+      rGp[r] = gProfFn(Math.abs(by));
+      rNK[r] = Math.exp(-(by*by) / (2 * 0.38 * 0.38));
+      rLK[r] = Math.exp(-(by*by) / (2 * 0.09 * 0.09));
+    }
+
     return {
-      geometry: geo, basePositions: base,
-      gripRadius: gripR,
-      gripTopY:  totalH / 2,
-      gripBotY: -totalH / 2,
+      geometry: geo,
+      basePositions: base,
+      ringData: { rings, cumulAxMult, rGp, rNK, rLK },
     };
   }, []);
 
@@ -1659,9 +2005,18 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
   const fractureThreshold = useMemo(() => {
     if (activeTest === "elongation") return 1.10;
     if (activeTest === "strength")   return 0.72;
-    if (activeTest === "bending")    return 0.58;
+    if (activeTest === "bending") {
+      const ys = prediction?.yieldStressMpa ?? (prediction?.strengthMpa ?? 900) * 0.72;
+      const uts = prediction?.strengthMpa ?? 900;
+      const elong = prediction?.elongationPercent ?? 12;
+      const strengthScore = Math.max(0, Math.min(1, (ys - 420) / 780));
+      const ductilityScore = Math.max(0, Math.min(1, (elong - 4) / 18));
+      const reserveScore = Math.max(0, Math.min(1, (uts - 650) / 700));
+      const resilience = strengthScore * 0.45 + ductilityScore * 0.4 + reserveScore * 0.15;
+      return resilience > 0.84 ? 0.92 : 0.40 + resilience * 0.40;
+    }
     return 0.90;
-  }, [activeTest]);
+  }, [activeTest, prediction]);
 
   function resetMesh() {
     fractureRef.current  = false;
@@ -1682,6 +2037,17 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
 
   useEffect(() => { resetMesh(); }, [resetKey]);
 
+  useEffect(() => {
+    if (activeTest !== "bending" || externalBendPull === null || !meshRef.current || fractureState) return;
+    const nextPull = Math.max(0, externalBendPull);
+    totalPullRef.current = nextPull;
+    peakPullRef.current = Math.max(peakPullRef.current, nextPull);
+    computeDeform(nextPull);
+    const strainPct = (nextPull / Math.max(0.01, fractureThreshold)) * 100;
+    onDeformStats?.({ maxStrain: strainPct, grabCount: 1, totalPull: nextPull });
+    if (nextPull >= fractureThreshold && fractureThreshold <= 0.76) triggerFracture(nextPull);
+  }, [activeTest, externalBendPull, fractureState, fractureThreshold]);
+
   // Core physics deformation — per-test vertex update
   function computeDeform(pull) {
     if (!meshRef.current) return 0;
@@ -1692,44 +2058,44 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     let maxDisp = 0;
 
     if (activeTest === "strength" || activeTest === "elongation") {
-      // Y-axis uniaxial tension: elongation + Poisson necking
-      const poisson = 0.30;
-      for (let i = 0; i < pos.count; i++) {
-        const bx = basePositions[i*3],   by = basePositions[i*3+1], bz = basePositions[i*3+2];
-        const absY = Math.abs(by);
+      // Ring-based uniaxial tension — precomputed ringData (no per-frame allocations)
+      const poisson     = 0.30;
+      const pullScale   = pull / 1.4;
+      const neckExtra   = Math.max(0, fRatio - 0.55) * 2.2;
+      const localAmount = Math.max(0, fRatio - 0.68) * 3.8;
+      const { rings, cumulAxMult, rGp, rNK, rLK } = ringData;
 
-        // Axial profile: gauge section stretches, grips are fixed
-        let gaugeProf;
-        if      (absY <= 0.70) gaugeProf = 1.0;
-        else if (absY <= 1.05) gaugeProf = 1.0 - (absY - 0.70) / 0.35;
-        else                   gaugeProf = 0.0;
-        gaugeProf = Math.max(0, gaugeProf);
+      // Fix bottom grip at original position — all elongation goes upward only.
+      // rings[0] is the bottommost ring (sorted ascending); its cumAxMult is negative
+      // (it would move down). Subtracting it from every ring shifts the whole specimen
+      // up so the bottom stays fixed.
+      const bottomAxial = cumulAxMult[0] * pullScale;
 
-        // Axial elongation proportional to position and profile
-        const axial = by * (pull / 1.4) * gaugeProf;
-
-        // Necking kernel: Gaussian centred at y=0 (gauge section minimum)
-        const neckKernel = Math.exp(-(by*by) / (2 * 0.40 * 0.40));
-        // Necking intensifies in the last 40% of load before fracture (localised)
-        const neckExtra  = Math.max(0, fRatio - 0.55) * 2.2;
-        const totalNeck  = poisson * pull * gaugeProf * neckKernel * (1.0 + neckExtra * 1.6);
-
-        pos.array[i*3]     = bx * (1.0 - totalNeck);
-        pos.array[i*3+1]   = by + axial;
-        pos.array[i*3+2]   = bz * (1.0 - totalNeck);
+      for (let r = 0; r < rings.length; r++) {
+        const { by, indices } = rings[r];
+        const axial = cumulAxMult[r] * pullScale - bottomAxial;
+        const newY  = by + axial;
         if (Math.abs(axial) > maxDisp) maxDisp = Math.abs(axial);
+
+        const diffuseNeck = poisson * pull * rGp[r] * rNK[r] * (1.0 + neckExtra * 1.6);
+        const localNeck   = poisson * localAmount * rGp[r] * rLK[r];
+        const radiusScale = Math.max(0.05, 1.0 - (diffuseNeck + localNeck));
+
+        for (const i of indices) {
+          pos.array[i * 3]     = basePositions[i * 3]     * radiusScale;
+          pos.array[i * 3 + 1] = newY;
+          pos.array[i * 3 + 2] = basePositions[i * 3 + 2] * radiusScale;
+        }
       }
     } else if (activeTest === "bending") {
-      // 3-point bending: central load, supports at ±1.2 — deflection in X direction
+      // 3-point bending: central load, supports at ±1.2 — downward deflection in world Y
       const halfSpan = 1.20;
       for (let i = 0; i < pos.count; i++) {
         const bx = basePositions[i*3], by = basePositions[i*3+1], bz = basePositions[i*3+2];
         const r = Math.min(1.0, Math.abs(by) / halfSpan);
-        // Simply-supported beam cubic profile: max at centre, zero at supports
         const prof = Math.max(0, 1.0 - 1.5*r*r + 0.5*r*r*r);
-        const dxDefl = -pull * prof;
-        // Axial fibre stretch on tension face (±X)
-        const fiberStretch = (bx / Math.max(0.01, Math.abs(bx)+0.01)) * pull * 0.018 * prof;
+        const dxDefl = pull * prof;
+        const fiberStretch = (bx / Math.max(0.01, Math.abs(bx)+0.01)) * pull * 0.014 * prof;
         pos.array[i*3]     = bx + dxDefl + fiberStretch;
         pos.array[i*3+1]   = by;
         pos.array[i*3+2]   = bz;
@@ -1755,19 +2121,16 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
       const cx = pos.array[i*3], cz = pos.array[i*3+2];
       const currentR = Math.sqrt(cx*cx + cz*cz);
 
-      let sigmaVM;
       if (activeTest === "bending") {
-        const by  = basePositions[i*3+1];
-        const bf  = (1.0 - Math.min(1, Math.abs(by) / 1.0)) * fRatio;
-        const nx  = cx / Math.max(0.01, gaugeR * 2);
-        sigmaVM = vonMisesBending(nx, bf, maxStressMPa);
+        col.array[i*3] = 0.08;
+        col.array[i*3+1] = 0.30;
+        col.array[i*3+2] = 0.96;
       } else {
-        sigmaVM = vonMisesAtVertex(currentR, gaugeR, fRatio, maxStressMPa);
+        const sigmaVM = vonMisesAtVertex(currentR, gaugeR, fRatio, maxStressMPa);
+        const t = Math.min(1, sigmaVM / Math.max(1, maxStressMPa));
+        const [r, g, b] = heatmapColor(t);
+        col.array[i*3] = r; col.array[i*3+1] = g; col.array[i*3+2] = b;
       }
-
-      const t = Math.min(1, sigmaVM / Math.max(1, maxStressMPa));
-      const [r, g, b] = heatmapColor(t);
-      col.array[i*3] = r; col.array[i*3+1] = g; col.array[i*3+2] = b;
     }
 
     pos.needsUpdate = true;
@@ -1782,8 +2145,23 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     fractureRef.current = true;
     computeDeform(pull); // final deformation snapshot
     const snapshot = new Float32Array(meshRef.current.geometry.attributes.position.array);
-    const topGeo = buildSpecimenFractureGeo(snapshot, geometry, true);
-    const botGeo = buildSpecimenFractureGeo(snapshot, geometry, false);
+
+    if (activeTest === "bending") {
+      const rightGeo = buildBendingFractureGeo(snapshot, geometry, true);
+      const leftGeo = buildBendingFractureGeo(snapshot, geometry, false);
+      setFractureState({ topGeo: rightGeo, botGeo: leftGeo, bending: true });
+      return;
+    }
+
+    // Analytically compute the deformed Y of the gauge centre ring.
+    // The centre ring always has cumulAxMult = 0.  After bottom-fixed correction
+    // every ring is shifted up by -bottomAxial, so the gauge centre lands at -bottomAxial.
+    const pullScale   = pull / 1.4;
+    const bottomAxial = ringData.cumulAxMult[0] * pullScale; // negative value
+    const neckY       = -bottomAxial;                        // gauge centre's new Y
+
+    const topGeo = buildSpecimenFractureGeo(snapshot, geometry, true,  neckY);
+    const botGeo = buildSpecimenFractureGeo(snapshot, geometry, false, neckY);
     setFractureState({ topGeo, botGeo });
   }
 
@@ -1793,14 +2171,16 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     const t = playhead / 100;
     const peakPull = peakPullRef.current > 0 ? peakPullRef.current : fractureThreshold * 0.85;
     const pull = peakPull * t;
+    if (activeTest === "bending") onBendPullSync?.(pull);
     computeDeform(pull);
     const strainPct = (pull / Math.max(0.01, fractureThreshold)) * 100;
     onDeformStats?.({ maxStrain: strainPct, grabCount: 1, totalPull: pull });
-    if (t >= 0.98 && peakPullRef.current >= fractureThreshold) triggerFracture(pull);
-  }, [playing, playhead]);
+    if (t >= 0.98 && peakPullRef.current >= fractureThreshold && fractureThreshold <= 0.76) triggerFracture(pull);
+  }, [playing, playhead, activeTest, fractureThreshold, fractureState, onBendPullSync]);
 
   function handlePointerDown(e) {
     if (interactMode !== "deform" || fractureRef.current || activeTest === "temperature") return;
+    if (activeTest === "bending") return;
     e.stopPropagation();
     onSelect?.();
     if (orbitEnabledRef) orbitEnabledRef.current = false;
@@ -1863,8 +2243,6 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
     metalness:    0.92,
     envMapIntensity: 1.4,
   };
-  // Cap material — no vertex colours, just clean metal
-  const capMat = { roughness: 0.22, metalness: 0.92, color: "#d0d0d4", envMapIntensity: 1.4 };
 
   return (
     <group scale={[sc, sc, sc]}>
@@ -1883,19 +2261,6 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
         <meshStandardMaterial {...matProps} side={isXray ? THREE.DoubleSide : THREE.FrontSide} />
       </mesh>
 
-      {/* Flat end-cap discs — make the specimen look like a solid billet */}
-      {!fractureState && !isWire && (
-        <>
-          <mesh position={[0, gripTopY * sc, 0]} rotation={[Math.PI / 2, 0, 0]} visible>
-            <circleGeometry args={[gripRadius * sc, 128]} />
-            <meshStandardMaterial {...capMat} transparent={isXray} opacity={isXray ? 0.28 : 1} side={THREE.DoubleSide} />
-          </mesh>
-          <mesh position={[0, gripBotY * sc, 0]} rotation={[-Math.PI / 2, 0, 0]} visible>
-            <circleGeometry args={[gripRadius * sc, 128]} />
-            <meshStandardMaterial {...capMat} transparent={isXray} opacity={isXray ? 0.28 : 1} side={THREE.DoubleSide} />
-          </mesh>
-        </>
-      )}
 
       {/* Post-fracture: two independently draggable cup-and-cone pieces */}
       {fractureState && (
@@ -1903,8 +2268,8 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
           <DraggablePiece
             geometry={fractureState.topGeo}
             matProps={{ ...matProps, side: THREE.DoubleSide }}
-            initOffsetVec={{ x: 0, y: 1, z: 0 }}
-            offsetScale={0.18}
+            initOffsetVec={fractureState.bending ? { x: 0, y: 1, z: 0 } : { x: 0, y: 1, z: 0 }}
+            offsetScale={fractureState.bending ? 0.03 : 0.06}
             camera={camera}
             orbitEnabledRef={orbitEnabledRef}
             interactMode={interactMode}
@@ -1912,17 +2277,18 @@ function DeformableMesh({ mode, activeTest, scale, interactMode, orbitEnabledRef
           <DraggablePiece
             geometry={fractureState.botGeo}
             matProps={{ ...matProps, side: THREE.DoubleSide }}
-            initOffsetVec={{ x: 0, y: -1, z: 0 }}
-            offsetScale={0.18}
+            initOffsetVec={fractureState.bending ? { x: 0, y: -1, z: 0 } : { x: 0, y: -1, z: 0 }}
+            offsetScale={fractureState.bending ? 0.03 : 0.06}
             camera={camera}
             orbitEnabledRef={orbitEnabledRef}
             interactMode={interactMode}
+            fixed
           />
         </>
       )}
 
       {/* Grab-point indicators in deform mode */}
-      {interactMode === "deform" && !fractureState && SPECIMEN_GRAB_HANDLES.map(([x, y, z], i) => (
+      {interactMode === "deform" && !fractureState && activeTest !== "bending" && SPECIMEN_GRAB_HANDLES.map(([x, y, z], i) => (
         <mesh key={i} position={[x, y, z]}>
           <sphereGeometry args={[0.05, 10, 10]} />
           <meshBasicMaterial color="#57F2FF" transparent opacity={0.6} />
@@ -1981,13 +2347,16 @@ function buildTornGeometry(deformedArr, srcGeo, grabPt, pullNormal, keepOnPullSi
   return geo;
 }
 
-function DraggablePiece({ geometry, matProps, initOffsetVec, offsetScale, camera, orbitEnabledRef, interactMode }) {
+function DraggablePiece({ geometry, matProps, initOffsetVec, offsetScale, camera, orbitEnabledRef, interactMode, fixed }) {
   const ref = useRef();
   const s = offsetScale ?? 0.07;
-  const initPos = initOffsetVec
-    ? [initOffsetVec.x * s, initOffsetVec.y * s, initOffsetVec.z * s]
-    : [0, s, 0];
+  const initPos = fixed
+    ? [0, 0, 0]
+    : initOffsetVec
+      ? [initOffsetVec.x * s, initOffsetVec.y * s, initOffsetVec.z * s]
+      : [0, s, 0];
   function handlePointerDown(e) {
+    if (fixed) return;
     e.stopPropagation();
     if (orbitEnabledRef) orbitEnabledRef.current = false;
     const sx = e.clientX, sy = e.clientY;
@@ -2021,7 +2390,7 @@ function DraggablePiece({ geometry, matProps, initOffsetVec, offsetScale, camera
       geometry={geometry}
       position={initPos}
       onPointerDown={handlePointerDown}
-      onPointerEnter={() => { document.body.style.cursor = "grab"; }}
+      onPointerEnter={() => { if (!fixed) document.body.style.cursor = "grab"; }}
       onPointerLeave={() => { document.body.style.cursor = ""; }}
     >
       <meshStandardMaterial {...matProps} side={THREE.DoubleSide} />
@@ -2038,7 +2407,7 @@ function buildAutoGrabs(activeTest, t, elasticityGpa, strengthMpa, geoDims) {
     return [{ px: 0, py: 0, pz: 0, dx: maxPull * t, dy: 0, dz: 0 }];
   }
   if (activeTest === "bending") {
-    const maxBend = Math.max(0.18, Math.min(0.62, 130 / E));
+    const maxBend = Math.max(0.12, Math.min(0.44, 96 / E));
     return [{ px: 0, py: 0, pz: 0, dx: 0, dy: -(maxBend * t), dz: 0 }];
   }
   if (activeTest === "elongation") {
@@ -2146,23 +2515,27 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
         if (Math.abs(axialDisp) > maxDisp) maxDisp = Math.abs(axialDisp);
       }
     } else if (activeTest === "bending") {
-      // ASTM E290 3-point bending: cubic beam profile — simply-supported with natural curvature
-      // w(r) = δ·(1 - 1.5r² + 0.5r³), r = |bx|/halfW — free rotation at supports, max deflection at center
+      // 3-point bending: smooth simply-supported beam-like curve from original positions only.
       let totalPush = 0;
       for (const g of pulls) totalPush += g.dy;
       const halfW = Math.max(geoDims.halfW, 0.01);
+      const halfH = Math.max(geoDims.halfH, 0.01);
+      const bendAmp = Math.max(0, -totalPush);
 
       for (let i = 0; i < pos.count; i++) {
         const bx = basePositions[i * 3], by = basePositions[i * 3 + 1], bz = basePositions[i * 3 + 2];
-        const r = Math.min(1.0, Math.abs(bx) / halfW);
-        // Cubic simply-supported beam profile: smooth S-curve, free rotation at support points
-        const profile = Math.max(0.0, 1.0 - 1.5 * r * r + 0.5 * r * r * r);
-        const dy = totalPush * profile;
-        // Slight axial stretching at the tension side (bottom), compression at top — visual realism
-        const axialStretch = -(by / Math.max(geoDims.halfH, 0.01)) * totalPush * 0.035 * profile;
-        pos.array[i * 3]     = bx * (1.0 + axialStretch);
-        pos.array[i * 3 + 1] = by + dy;
-        pos.array[i * 3 + 2] = bz;
+        const xi = Math.max(-1, Math.min(1, bx / halfW));
+        const supportProfile = Math.max(0, (1 - xi * xi) ** 2);
+        const centerBias = Math.exp(-(xi * xi) / 0.18);
+        const profile = 0.68 * supportProfile + 0.32 * centerBias;
+        const dy = -bendAmp * profile;
+        const curvature = (bendAmp / (halfW * halfW)) * (0.45 + 0.55 * supportProfile);
+        const axialShift = -xi * bendAmp * 0.028 * (by / halfH);
+        const thicknessWarp = curvature * bx * bx * (by / halfH) * 0.018;
+        const zSqueeze = 1 - Math.min(0.12, bendAmp * 0.06 * profile);
+        pos.array[i * 3]     = bx + axialShift;
+        pos.array[i * 3 + 1] = by + dy + thicknessWarp;
+        pos.array[i * 3 + 2] = bz * zSqueeze;
         if (Math.abs(dy) > maxDisp) maxDisp = Math.abs(dy);
       }
     } else if (activeTest === "elongation") {
@@ -2392,7 +2765,19 @@ function DeformableShape({ shape, mode, scale, testScale, activeTest, interactMo
 
       {/* ── 3점 굽힘 테스트 시각 요소 ── */}
       {activeTest === "bending" && !fractureState && (
-        <BendingFixtures geoDims={geoDims} interactMode={interactMode} />
+        <BendingFixtures
+          geoDims={geoDims}
+          interactMode={interactMode}
+          bendProgress={Math.max(
+            0,
+            Math.min(
+              1,
+              (grabsRef.current.reduce((s, g) => s + Math.max(0, -g.dy), 0) ||
+                recordedGrabsRef.current.reduce((s, g) => s + Math.max(0, -g.dy), 0)) /
+                0.44
+            )
+          )}
+        />
       )}
 
       {/* ── 강도 테스트: 인장 클램프 시각 요소 ── */}
@@ -2413,7 +2798,7 @@ function GridFloor() {
       <gridHelper args={[20, 80, "#2a4a6a", "#1e3a58"]} />
       <gridHelper args={[20, 20, "#3a6a9a", "#2a5278"]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
-        <ringGeometry args={[4.8, 5.6, 64]} />
+        <circleGeometry args={[5.2, 72]} />
         <meshBasicMaterial color="#00D1FF" transparent opacity={0.07} side={THREE.DoubleSide} />
       </mesh>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.002, 0]}>
@@ -2603,44 +2988,100 @@ function TestInfoHUD({ activeTest, interactMode, prediction, deformStats }) {
   );
 }
 
-function BendingFixtures({ geoDims, interactMode }) {
+function BendingFixtures({ geoDims, interactMode, bendProgress = 0, bendPull = 0, onBendPullChange, orbitEnabledRef }) {
   const hw = geoDims.halfW;
   const hh = geoDims.halfH;
-  const supY = -hh - 0.18;
-  const suppMat = { color: "#00D1FF", emissive: "#00D1FF", emissiveIntensity: 0.55, roughness: 0.2, metalness: 0.85 };
+  const supY = -hh - 0.16;
+  const fixtureMat = { color: "#4b5563", roughness: 0.36, metalness: 0.92 };
+  const steelMat = { color: "#dce3ea", emissive: "#93a8ba", emissiveIntensity: 0.1, roughness: 0.24, metalness: 0.98 };
+  const loadingHeadGeometry = useMemo(() => createClosedLoadingHeadGeometry(), []);
+  const loadingHeadCheck = useMemo(() => inspectGeometryClosure(loadingHeadGeometry), [loadingHeadGeometry]);
+  const headDrop = 0.06 + bendProgress * 0.34;
+  const maxBendPull = 0.76;
+
+  useEffect(() => () => loadingHeadGeometry.dispose(), [loadingHeadGeometry]);
+
+  useEffect(() => {
+    if (loadingHeadCheck.hasOpenEdges || loadingHeadCheck.nonManifoldEdgeCount > 0) {
+      console.warn("[LoadingHead] Geometry is not closed", loadingHeadCheck);
+    } else {
+      console.info("[LoadingHead] Watertight closed mesh verified", loadingHeadCheck);
+    }
+  }, [loadingHeadCheck]);
+
+  function handleHeadPointerDown(e) {
+    if (interactMode !== "deform") return;
+    e.stopPropagation();
+    if (orbitEnabledRef) orbitEnabledRef.current = false;
+    const startY = e.clientY;
+    const startPull = bendPull;
+
+    function onMove(ev) {
+      const delta = Math.max(0, (ev.clientY - startY) * 0.0032);
+      const nextPull = Math.max(0, Math.min(maxBendPull, startPull + delta));
+      onBendPullChange?.(nextPull);
+    }
+
+    function onUp() {
+      if (orbitEnabledRef) orbitEnabledRef.current = interactMode === "orbit";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
   return (
     <>
-      {/* 왼쪽 지지대 (삼각형 프리즘 근사: 좁은 위/넓은 아래 실린더) */}
+      <mesh position={[0, supY - 0.42, 0]} receiveShadow>
+        <boxGeometry args={[hw * 3.5, 0.1, 0.9]} />
+        <meshStandardMaterial color="#2c3440" roughness={0.5} metalness={0.86} />
+      </mesh>
+      <mesh position={[-hw - 0.58, 0, 0]}>
+        <boxGeometry args={[0.22, hh * 2.2, 0.46]} />
+        <meshStandardMaterial {...fixtureMat} />
+      </mesh>
+      <mesh position={[hw + 0.58, 0, 0]}>
+        <boxGeometry args={[0.22, hh * 2.2, 0.46]} />
+        <meshStandardMaterial {...fixtureMat} />
+      </mesh>
       <mesh position={[-hw, supY, 0]}>
-        <cylinderGeometry args={[0.04, 0.1, 0.22, 6]} />
-        <meshStandardMaterial {...suppMat} />
+        <cylinderGeometry args={[0.075, 0.11, 0.24, 24, 1, false]} />
+        <meshStandardMaterial {...fixtureMat} />
       </mesh>
-      {/* 오른쪽 지지대 */}
       <mesh position={[hw, supY, 0]}>
-        <cylinderGeometry args={[0.04, 0.1, 0.22, 6]} />
-        <meshStandardMaterial {...suppMat} />
+        <cylinderGeometry args={[0.075, 0.11, 0.24, 24, 1, false]} />
+        <meshStandardMaterial {...fixtureMat} />
       </mesh>
-      {/* 지지대 베이스 플레이트 */}
-      <mesh position={[0, supY - 0.16, 0]}>
-        <boxGeometry args={[hw * 2.6, 0.06, 0.38]} />
-        <meshStandardMaterial color="#0A3050" roughness={0.5} metalness={0.7} />
+      <mesh position={[-hw - 0.29, supY - 0.14, 0]}>
+        <boxGeometry args={[0.62, 0.08, 0.4]} />
+        <meshStandardMaterial {...fixtureMat} />
       </mesh>
-      {/* 중심 하중 펀치 (↓ 화살표) — 변형 모드일 때만 표시 */}
+      <mesh position={[hw + 0.29, supY - 0.14, 0]}>
+        <boxGeometry args={[0.62, 0.08, 0.4]} />
+        <meshStandardMaterial {...fixtureMat} />
+      </mesh>
       {interactMode === "deform" && (
-        <group position={[0, hh + 0.50, 0]}>
-          <mesh position={[0, 0.18, 0]}>
-            <cylinderGeometry args={[0.04, 0.04, 0.36, 8]} />
-            <meshStandardMaterial color="#FF5A5A" emissive="#FF5A5A" emissiveIntensity={0.8} />
+        <group position={[0, hh + 0.62 - headDrop, 0]}>
+          <mesh position={[0, 0.96, 0]}>
+            <boxGeometry args={[0.74, 0.16, 0.54]} />
+            <meshStandardMaterial color="#6b7280" roughness={0.3} metalness={0.9} />
           </mesh>
-          {/* 화살촉 — 아래 방향 */}
-          <mesh rotation={[Math.PI, 0, 0]} position={[0, 0, 0]}>
-            <coneGeometry args={[0.10, 0.24, 8]} />
-            <meshStandardMaterial color="#FF5A5A" emissive="#FF5A5A" emissiveIntensity={0.8} />
+          <mesh position={[0, 0.56, 0]}>
+            <cylinderGeometry args={[0.13, 0.13, 0.86, 32, 1, false]} />
+            <meshStandardMaterial color="#b8c2cc" roughness={0.18} metalness={0.98} />
           </mesh>
-          {/* 상단 캡 */}
-          <mesh position={[0, 0.36, 0]}>
-            <boxGeometry args={[0.32, 0.08, 0.22]} />
-            <meshStandardMaterial color="#AA3030" roughness={0.3} metalness={0.8} />
+          <mesh geometry={loadingHeadGeometry}>
+            <meshStandardMaterial {...steelMat} />
+          </mesh>
+          <mesh position={[0, 0.7, 0]}>
+            <cylinderGeometry args={[0.31, 0.31, 0.12, 32, 1, false]} />
+            <meshStandardMaterial color="#a9b6c2" roughness={0.22} metalness={0.96} />
+          </mesh>
+          <mesh position={[0, 0.56, 0]} onPointerDown={handleHeadPointerDown}>
+            <boxGeometry args={[0.82, 1.6, 0.62]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
           </mesh>
         </group>
       )}

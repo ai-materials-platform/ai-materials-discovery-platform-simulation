@@ -622,25 +622,32 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 /* ── PDF 인쇄 스타일 ──────────────────────────────────────────────────────── */
 @media print {
-  html, body { height: auto !important; background: white !important; }
-  .app-shell,
-  .splash-overlay,
-  .report-backdrop > :not(.report-modal) { display: none !important; }
+  html, body {
+    height: auto !important;
+    background: white !important;
+  }
 
+  /* React 루트(앱 전체)는 숨기고 포털로 body에 직접 붙은 모달만 남긴다 */
+  #root { display: none !important; }
+
+  /* 반투명 어두운 배경 제거 — inline style보다 !important가 우선 */
   .report-backdrop {
     position: static !important;
-    background: none !important;
+    background: white !important;
     padding: 0 !important;
     overflow: visible !important;
     display: block !important;
   }
+
   .report-modal {
     box-shadow: none !important;
     border-radius: 0 !important;
     width: 100% !important;
     max-width: 100% !important;
+    background: white !important;
   }
 
+  /* 상단 툴바(저장 버튼 등) 숨김 */
   .report-modal > div:first-child { display: none !important; }
 
   @page {
