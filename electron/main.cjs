@@ -25,6 +25,7 @@ function createWindow() {
     show: false,
     backgroundColor: "#0B1020",
     title: "MAPS",
+    icon: path.join(rootDir, "assets", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
