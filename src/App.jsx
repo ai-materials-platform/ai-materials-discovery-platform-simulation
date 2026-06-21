@@ -9,6 +9,7 @@ import {
   Cpu,
   Database,
   Download,
+  LayoutDashboard,
   FastForward,
   FileJson,
   FileText,
@@ -642,6 +643,25 @@ function App() {
     addLog(`원소 제거: ${element}`);
   }
 
+  async function saveToDashboard() {
+    if (!window.desktopApi?.saveToWorkspace) {
+      addLog("대시보드 저장 기능을 사용할 수 없습니다.");
+      return;
+    }
+    try {
+      const result = await window.desktopApi.saveToWorkspace({
+        alloyName: selectedAlloy?.name ?? "시뮬레이션 결과",
+        prediction,
+        simulation,
+        composition,
+        process
+      });
+      addLog(`대시보드 저장 완료 → ${result.projectName} / ${result.saveName}`);
+    } catch (err) {
+      addLog(`대시보드 저장 실패: ${err.message}`);
+    }
+  }
+
   function exportCSV() {
     const p = prediction;
     const rows = [
@@ -949,10 +969,40 @@ function App() {
       )}
 
       <header className="top-bar panel">
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            title="대시보드로 돌아가기"
+            onClick={() => window.desktopApi?.close()}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              height: 30, padding: "0 10px",
+              background: "transparent", border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: 6, color: "rgba(255,255,255,0.7)",
+              fontSize: 12, fontWeight: 600, cursor: "pointer",
+              letterSpacing: "0.2px"
+            }}
+          >
+            ← 대시보드
+          </button>
+          <button
+            title="물성 예측 앱 열기"
+            onClick={() => window.desktopApi?.openPrediction()}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              height: 30, padding: "0 10px",
+              background: "rgba(99,179,237,0.12)", border: "1px solid rgba(99,179,237,0.3)",
+              borderRadius: 6, color: "#7EC8E3",
+              fontSize: 12, fontWeight: 600, cursor: "pointer"
+            }}
+          >
+            물성 예측 ↗
+          </button>
+          <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+        </div>
         <div className="brand-block">
           <div className="brand-mark"><Boxes size={18} /></div>
           <div>
-            <strong>합금 디지털 트윈 시뮬레이션</strong>
+            <strong>MAPS 시뮬레이션</strong>
             <span>조성 비율 기반 물성 예측 및 시편 시뮬레이션</span>
           </div>
         </div>
@@ -964,6 +1014,7 @@ function App() {
           <IconButton title="CSV 내보내기" onClick={exportCSV}><Download size={16} /></IconButton>
           <IconButton title="JSON 내보내기" onClick={exportJSON}><FileJson size={16} /></IconButton>
           <IconButton title="상태 저장" onClick={saveState}><Save size={16} /></IconButton>
+          <IconButton title="대시보드 결과 저장소에 저장" onClick={saveToDashboard} style={{ color: '#4a9eff' }}><LayoutDashboard size={16} /></IconButton>
           <button
             className="report-btn"
             title="재료 시험 보고서 생성 (PDF)"

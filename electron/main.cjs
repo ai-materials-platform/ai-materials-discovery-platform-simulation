@@ -24,7 +24,8 @@ function createWindow() {
     minHeight: 760,
     show: false,
     backgroundColor: "#0B1020",
-    title: "AI 합금 디지털 트윈 시뮬레이션",
+    title: "MAPS",
+    icon: path.join(rootDir, "assets", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -83,6 +84,55 @@ app.on("before-quit", () => {
 });
 
 ipcMain.handle("app:getBackendUrl", () => "http://127.0.0.1:8765");
+
+ipcMain.handle("simulation:saveToWorkspace", async (_event, { alloyName, prediction, simulation, composition, process: proc }) => {
+  const workspacesRoot = process.env.AI_MAPS_WORKSPACE_ROOT
+    || path.join(path.resolve(__dirname, '..', '..'), 'workspaces');
+
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+  const projectName = `Simulation_${dateStr}`;
+  const saveName = (alloyName || 'result').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+
+  const saveDir = path.join(workspacesRoot, projectName, saveName);
+  fs.mkdirSync(saveDir, { recursive: true });
+
+  // Write CSV (항목, 값, 단위 형식)
+  const rows = [
+    ['항목', '값', '단위'],
+    ['합금명', alloyName ?? '-', ''],
+    ...Object.entries(composition ?? {}).map(([el, v]) => [`조성-${el}`, v, '%']),
+    ['인장강도 UTS', prediction?.utsMpa ?? prediction?.strengthMpa ?? '-', 'MPa'],
+    ['0.2% 항복강도', prediction?.yieldStressMpa ?? '-', 'MPa'],
+    ['연신율', prediction?.elongationPercent ?? '-', '%'],
+    ['단면 수축률', prediction?.areaReductionPercent ?? '-', '%'],
+    ['탄성 계수', prediction?.elasticityGpa ?? '-', 'GPa'],
+    ['열전도율', prediction?.thermalConductivity ?? '-', 'W/mK'],
+    ['용융점', prediction?.meltingPoint ?? '-', '°C'],
+    ['예측 신뢰도', prediction?.predictionConfidence ?? '-', '%'],
+    ['최대 응력', simulation?.result?.maxStressMpa ?? '-', 'MPa'],
+    ['변형률', simulation?.result?.strainPercent ?? '-', '%'],
+    ['온도', simulation?.result?.temperatureC ?? '-', '°C'],
+    ['파손 위험', simulation?.result?.failureRisk ?? '-', ''],
+    ['용체화 온도', proc?.['Solution_treatment_temperature'] ?? '-', '°C'],
+    ['처리 시간', proc?.['Solution_treatment_time(s)'] ?? '-', 's'],
+    ['테스트 온도', proc?.['Temperature (K)'] ?? '-', 'K'],
+    ['저장 시각', now.toISOString(), ''],
+  ];
+  const csv = rows.map(row => row.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  fs.writeFileSync(path.join(saveDir, 'preprocessed_data.csv'), csv, 'utf8');
+
+  // Write state.json
+  const state = {
+    saved_date: now.toISOString(),
+    simulation: true,
+    alloy_name: alloyName,
+    r2_avg: null
+  };
+  fs.writeFileSync(path.join(saveDir, 'state.json'), JSON.stringify(state, null, 2), 'utf8');
+
+  return { projectName, saveName };
+});
 
 ipcMain.handle("pdf:save", async (event, { contentHtml = "" } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender);
