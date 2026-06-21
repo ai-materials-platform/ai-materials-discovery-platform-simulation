@@ -9,6 +9,7 @@ import {
   Cpu,
   Database,
   Download,
+  LayoutDashboard,
   FastForward,
   FileJson,
   FileText,
@@ -642,6 +643,25 @@ function App() {
     addLog(`원소 제거: ${element}`);
   }
 
+  async function saveToDashboard() {
+    if (!window.desktopApi?.saveToWorkspace) {
+      addLog("대시보드 저장 기능을 사용할 수 없습니다.");
+      return;
+    }
+    try {
+      const result = await window.desktopApi.saveToWorkspace({
+        alloyName: selectedAlloy?.name ?? "시뮬레이션 결과",
+        prediction,
+        simulation,
+        composition,
+        process
+      });
+      addLog(`대시보드 저장 완료 → ${result.projectName} / ${result.saveName}`);
+    } catch (err) {
+      addLog(`대시보드 저장 실패: ${err.message}`);
+    }
+  }
+
   function exportCSV() {
     const p = prediction;
     const rows = [
@@ -994,6 +1014,7 @@ function App() {
           <IconButton title="CSV 내보내기" onClick={exportCSV}><Download size={16} /></IconButton>
           <IconButton title="JSON 내보내기" onClick={exportJSON}><FileJson size={16} /></IconButton>
           <IconButton title="상태 저장" onClick={saveState}><Save size={16} /></IconButton>
+          <IconButton title="대시보드 결과 저장소에 저장" onClick={saveToDashboard} style={{ color: '#4a9eff' }}><LayoutDashboard size={16} /></IconButton>
           <button
             className="report-btn"
             title="재료 시험 보고서 생성 (PDF)"
